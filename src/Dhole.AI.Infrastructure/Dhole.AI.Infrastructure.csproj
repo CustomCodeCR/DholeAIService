@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.9" />
+    <PackageReference Include="CustomCodeFramework.Core" Version="0.2.0" />
+    <PackageReference Include="CustomCodeFramework.Messaging" Version="0.2.0" />
+    <PackageReference Include="CustomCodeFramework.Auth" Version="0.2.0" />
+    <PackageReference Include="CustomCodeFramework.Auth.Redis" Version="0.2.0" />
+    <PackageReference Include="CustomCodeFramework.Redis" Version="0.2.0" />
+    <PackageReference Include="CustomCodeFramework.Redis.Streams" Version="0.2.0" />
+    <PackageReference Include="CustomCodeFramework.Mongo" Version="0.2.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dhole.AI.Application\Dhole.AI.Application.csproj" />
+    <ProjectReference Include="..\Dhole.AI.Contracts\Dhole.AI.Contracts.csproj" />
+    <ProjectReference Include="..\Dhole.AI.Domain\Dhole.AI.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

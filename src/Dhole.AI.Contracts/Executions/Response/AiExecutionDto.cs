@@ -1,0 +1,32 @@
+namespace Dhole.AI.Contracts.Executions.Response;
+
+public sealed record AiExecutionDto(
+    Guid Id,
+    Guid ProfileId,
+    string ProfileKey,
+    string ProfileName,
+    Guid? PromptTemplateId,
+    string? PromptTemplateName,
+    string ExecutionType,
+    string Status,
+    string? CorrelationId,
+    string? RequestHash,
+    string? OutputReference,
+    Guid? SelectedConnectionId,
+    string? SelectedConnectionName,
+    Guid? SelectedModelId,
+    string? SelectedModelName,
+    string? SelectedExternalModelId,
+    string? SelectedProviderType,
+    AiTokenUsageDto TokenUsage,
+    decimal EstimatedCost,
+    long DurationMilliseconds,
+    string FinishReason,
+    string? ErrorCode,
+    string? ErrorMessage,
+    DateTime? StartedAtUtc,
+    DateTime? CompletedAtUtc,
+    DateTime? CancelledAtUtc,
+    string? CancellationReason,
+    IReadOnlyCollection<AiExecutionAttemptDto> Attempts
+);

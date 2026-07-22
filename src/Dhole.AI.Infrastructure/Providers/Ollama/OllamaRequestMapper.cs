@@ -37,10 +37,23 @@ internal static class OllamaRequestMapper
             },
         };
 
+        payload["keep_alive"] = "15m";
+
         if (request.RequiresStructuredOutput)
         {
+            /*
+             * Los modelos de razonamiento pueden consumir la mayor parte del timeout
+             * pensando antes de emitir un JSON corto. Para extracción estructurada no
+             * necesitamos ese razonamiento visible ni miles de tokens de salida.
+             */
+            payload["think"] = false;
             payload["format"] =
                 ProviderJson.ParseNode(request.JsonSchema) ?? JsonValue.Create("json");
+
+            if (payload["options"] is JsonObject options)
+            {
+                options["num_predict"] = Math.Min(request.MaximumOutputTokens, 1_600);
+            }
         }
 
         return payload;

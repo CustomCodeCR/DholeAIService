@@ -29,6 +29,58 @@ public sealed class AiDefaultProfilesInitializer(
     private const string PricingEmailTemplateKey = "pricing-email-analysis";
     private const string PricingDashboardTemplateKey = "pricing-dashboard-analysis";
 
+    private const string PricingEmailJsonSchema = """
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "success": { "type": "boolean" },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+            "rows": {
+              "type": "array",
+              "maxItems": 200,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "originPort": { "type": ["string", "null"] },
+                  "portOfExit": { "type": ["string", "null"] },
+                  "destinationPort": { "type": ["string", "null"] },
+                  "containerType": { "type": ["string", "null"] },
+                  "carrier": { "type": ["string", "null"] },
+                  "agent": { "type": ["string", "null"] },
+                  "commodity": { "type": ["string", "null"] },
+                  "currency": { "type": ["string", "null"] },
+                  "freeDays": { "type": ["integer", "null"], "minimum": 0 },
+                  "transitDays": { "type": ["integer", "null"], "minimum": 0 },
+                  "validFrom": { "type": ["string", "null"] },
+                  "validTo": { "type": ["string", "null"] },
+                  "oceanFreight": { "type": ["number", "null"] },
+                  "originCharges": { "type": ["number", "null"] },
+                  "destinationCharges": { "type": ["number", "null"] },
+                  "surcharges": { "type": ["number", "null"] },
+                  "totalCost": { "type": ["number", "null"] },
+                  "totalSale": { "type": ["number", "null"] },
+                  "profit": { "type": ["number", "null"] },
+                  "margin": { "type": ["number", "null"] },
+                  "spaceComment": { "type": ["string", "null"] },
+                  "remarks": { "type": ["string", "null"] }
+                },
+                "required": [
+                  "originPort", "destinationPort", "containerType",
+                  "carrier", "currency", "oceanFreight"
+                ]
+              }
+            },
+            "warnings": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["success", "confidence", "rows", "warnings"]
+        }
+        """;
+
     private static readonly DefaultProfileDefinition[] Definitions =
     [
         new(
@@ -42,26 +94,51 @@ public sealed class AiDefaultProfilesInitializer(
                 Eres el asistente de inteligencia artificial del ecosistema Dhole. Ayuda con logística, comercio exterior, aduanas, pricing, operaciones y soporte funcional del sistema. Responde en español, salvo que el usuario solicite otro idioma. Sé directo, preciso y orientado a acciones. No inventes datos, tarifas, regulaciones, estados de procesos ni resultados del sistema. Cuando falte información, indica claramente qué dato falta. Distingue hechos, supuestos y recomendaciones. No reveles secretos, credenciales, tokens ni información sensible. Para decisiones comerciales o regulatorias, señala los riesgos y recomienda validación humana cuando corresponda.
                 """,
             RoutingMode: AiRoutingMode.LocalFirst,
+            ResponseFormat: AiResponseFormat.Text,
             Temperature: 0.35m,
             MaximumOutputTokens: 2_048,
             TimeoutSeconds: 120,
-            ModelPreference: DefaultModelPreference.LocalFirst
+            JsonSchema: null,
+            RequiredCapability: AiModelCapability.Chat,
+            ModelPreference: DefaultModelPreference.LocalFirst,
+            EnforceConfiguration: false
         ),
         new(
             Key: "pricing-email-analysis",
-            Name: "Análisis IA de correos de Pricing",
-            Description: "Analiza correos, extracciones y lotes importados para Pricing FCL.",
+            Name: "Extracción IA de correos de Pricing",
+            Description: "Fallback estructurado para extraer tarifas FCL desde correos y sus adjuntos cuando DataExtraction no puede analizarlos.",
             TemplateKey: PricingEmailTemplateKey,
-            TemplateName: "Análisis de correos de Pricing",
-            TemplateDescription: "Instrucciones especializadas para evaluar correos y datos extraídos de tarifarios FCL.",
+            TemplateName: "Extracción de correos de Pricing",
+            TemplateDescription: "Instrucciones especializadas para convertir correos y adjuntos de tarifas FCL en filas estructuradas para DataExtraction y Pricing.",
             SystemPrompt: """
-                Actúa como analista senior de Pricing FCL y comercio exterior. Recibirás datos de un correo, su extracción y, cuando exista, información del lote importado. Identifica y valida ruta, POL, POE, POD, naviera, agente, tipo y cantidad de contenedores, moneda, vigencia, días libres, tiempo de tránsito, flete marítimo, flete terrestre y cargos adicionales. Detecta campos faltantes, inconsistencias, duplicados, fechas vencidas, valores atípicos, baja confianza de extracción y cualquier condición que requiera revisión humana. Cuando haya varias alternativas, compáralas por costo total, vigencia, tránsito, confiabilidad de los datos y riesgos comerciales; no elijas únicamente el menor flete. Responde en español usando exactamente estas secciones: Resumen, Datos detectados, Alertas, Recomendación y Próxima acción. No inventes información ni completes valores ausentes por suposición.
+                Eres un extractor de tarifas FCL. Recibirás JSON con metadatos del correo, una tabla convertida a texto o el contenido textual de un adjunto y el resultado previo de DataExtraction.
+
+                Devuelve únicamente el objeto JSON del esquema, sin markdown, explicaciones ni texto adicional.
+
+                Reglas:
+                - Extrae solo valores explícitos; nunca inventes puertos, naviera, agente, moneda, fechas, montos, días libres o tránsito.
+                - Copia POL, POE, POD, naviera, agente, contenedor y moneda tal como aparecen en el correo o documento. No los traduzcas, completes ni reemplaces por nombres que recuerdes: DataExtraction será el único responsable de compararlos y estandarizarlos contra Config.
+                - Cada combinación de ruta y contenedor produce una fila independiente.
+                - Usa exactamente estos nombres en cada fila: originPort, portOfExit, destinationPort, containerType, carrier, agent, commodity, currency, freeDays, transitDays, validFrom, validTo, oceanFreight, originCharges, destinationCharges, surcharges, totalCost, totalSale, profit, margin, spaceComment y remarks. No traduzcas ni cambies los nombres.
+                - originPort = POL, portOfExit = POE y destinationPort = POD.
+                - Normaliza contenedores únicamente cuando sea claro: 20GP, 40GP, 40HC o 45HC.
+                - Usa moneda ISO y fechas YYYY-MM-DD cuando puedan determinarse.
+                - Todos los montos, días, margen y confianza deben ser números JSON sin símbolos de moneda, porcentajes ni separadores de miles.
+                - oceanFreight es el flete marítimo por contenedor.
+                - Para datos ausentes usa null cuando el esquema permita null; no inventes texto de relleno.
+                - La raíz siempre debe ser {"success": true|false, "confidence": 0-100, "rows": [...], "warnings": [...]}. No devuelvas un arreglo directo ni envuelvas el objeto en data, result o content.
+                - success=false y rows=[] cuando no haya evidencia suficiente de tarifas FCL.
+                - confidence va de 0 a 100 y warnings contiene ambigüedades reales.
                 """,
             RoutingMode: AiRoutingMode.PriorityFallback,
-            Temperature: 0.10m,
-            MaximumOutputTokens: 3_000,
-            TimeoutSeconds: 180,
-            ModelPreference: DefaultModelPreference.AnalysisQuality
+            ResponseFormat: AiResponseFormat.JsonSchema,
+            Temperature: 0.05m,
+            MaximumOutputTokens: 1_600,
+            TimeoutSeconds: 240,
+            JsonSchema: PricingEmailJsonSchema,
+            RequiredCapability: AiModelCapability.StructuredOutput,
+            ModelPreference: DefaultModelPreference.AnalysisQuality,
+            EnforceConfiguration: true
         ),
         new(
             Key: "pricing-dashboard-analysis",
@@ -74,10 +151,14 @@ public sealed class AiDefaultProfilesInitializer(
                 Actúa como analista senior de Pricing FCL. Recibirás las tarifas importadas correspondientes a los filtros del panel. Evalúa por separado las vías Limón/Moín, Puerto Caldera y Multimodal. Compara naviera, POL, POE, POD, tipo de contenedor, cantidad de contenedores, flete marítimo internacional, flete terrestre internacional, costos, venta, utilidad, margen, vigencia, días libres, tiempo de tránsito y calidad de los datos. Para rutas multimodales verifica el flete terrestre esperado de USD 2,140 y señala cualquier ausencia o diferencia. Recomienda las mejores alternativas considerando costo total, margen mínimo esperado del 12%, vigencia, tránsito, confiabilidad y datos faltantes; no selecciones una opción únicamente por tener el menor flete. Responde en español usando exactamente estas secciones: Resumen ejecutivo, Mejores opciones, Riesgos, Oportunidades de margen y Acciones recomendadas. No inventes datos ni presentes como aprobada una tarifa que no tenga evidencia de aprobación.
                 """,
             RoutingMode: AiRoutingMode.PriorityFallback,
+            ResponseFormat: AiResponseFormat.Text,
             Temperature: 0.10m,
             MaximumOutputTokens: 3_500,
             TimeoutSeconds: 180,
-            ModelPreference: DefaultModelPreference.AnalysisQuality
+            JsonSchema: null,
+            RequiredCapability: AiModelCapability.Chat,
+            ModelPreference: DefaultModelPreference.AnalysisQuality,
+            EnforceConfiguration: false
         ),
     ];
 
@@ -96,8 +177,7 @@ public sealed class AiDefaultProfilesInitializer(
             20
         );
 
-        var compatibleModels = await GetCompatibleModelsAsync(cancellationToken);
-        var compatibleModelIds = compatibleModels.Select(model => model.Id).ToHashSet();
+        var availableModels = await GetAvailableModelsAsync(cancellationToken);
         var templatesCreated = 0;
         var profilesCreated = 0;
         var profilesConfigured = 0;
@@ -126,9 +206,25 @@ public sealed class AiDefaultProfilesInitializer(
                 await dbContext.AiPromptTemplates.AddAsync(template, cancellationToken);
                 templatesCreated++;
             }
-            else if (!template.IsActive)
+            else
             {
-                template.Activate(null);
+                if (definition.EnforceConfiguration)
+                {
+                    template.Update(
+                        definition.TemplateKey,
+                        definition.TemplateName,
+                        definition.TemplateDescription,
+                        definition.SystemPrompt,
+                        null,
+                        null,
+                        null
+                    );
+                }
+
+                if (!template.IsActive)
+                {
+                    template.Activate(null);
+                }
             }
 
             var profile = await dbContext.AiProfiles
@@ -148,11 +244,11 @@ public sealed class AiDefaultProfilesInitializer(
                     definition.Description,
                     template.Id,
                     definition.RoutingMode,
-                    AiResponseFormat.Text,
+                    definition.ResponseFormat,
                     definition.Temperature,
                     definition.MaximumOutputTokens,
                     definition.TimeoutSeconds,
-                    null,
+                    definition.JsonSchema,
                     null
                 );
 
@@ -160,7 +256,7 @@ public sealed class AiDefaultProfilesInitializer(
                 profilesCreated++;
                 createdNow = true;
             }
-            else if (profile.Models.Count == 0 && !profile.IsActive)
+            else if (definition.EnforceConfiguration || (profile.Models.Count == 0 && !profile.IsActive))
             {
                 profile.Update(
                     definition.Key,
@@ -168,20 +264,32 @@ public sealed class AiDefaultProfilesInitializer(
                     definition.Description,
                     template.Id,
                     definition.RoutingMode,
-                    AiResponseFormat.Text,
+                    definition.ResponseFormat,
                     definition.Temperature,
                     definition.MaximumOutputTokens,
                     definition.TimeoutSeconds,
-                    null,
+                    definition.JsonSchema,
                     null
                 );
             }
 
+            var compatibleModels = availableModels
+                .Where(model => model.Supports(definition.RequiredCapability))
+                .ToArray();
+            var compatibleModelIds = compatibleModels.Select(model => model.Id).ToHashSet();
             var hasCompatibleConfiguredModel = profile.Models.Any(model =>
                 compatibleModelIds.Contains(model.ModelId)
             );
 
-            if (profile.Models.Count == 0 || !hasCompatibleConfiguredModel)
+            var hasIncompatibleConfiguredModel = profile.Models.Any(model =>
+                !compatibleModelIds.Contains(model.ModelId)
+            );
+
+            if (
+                profile.Models.Count == 0
+                || !hasCompatibleConfiguredModel
+                || (definition.EnforceConfiguration && hasIncompatibleConfiguredModel)
+            )
             {
                 var selectedModels = SelectModels(
                     compatibleModels,
@@ -191,6 +299,11 @@ public sealed class AiDefaultProfilesInitializer(
 
                 if (selectedModels.Count == 0)
                 {
+                    if (profile.IsActive)
+                    {
+                        profile.Inactivate(null);
+                    }
+
                     allReady = false;
                     continue;
                 }
@@ -227,7 +340,7 @@ public sealed class AiDefaultProfilesInitializer(
         if (!allReady)
         {
             logger.LogWarning(
-                "Los perfiles predeterminados fueron creados, pero aún no existe un modelo activo con capacidad Chat para configurarlos."
+                "Los perfiles predeterminados fueron creados, pero todavía falta un modelo activo con las capacidades requeridas para alguno de ellos."
             );
         }
 
@@ -237,11 +350,11 @@ public sealed class AiDefaultProfilesInitializer(
             profilesCreated,
             profilesConfigured,
             profilesActivated,
-            compatibleModels.Count
+            availableModels.Count
         );
     }
 
-    private async Task<IReadOnlyCollection<AiModel>> GetCompatibleModelsAsync(
+    private async Task<IReadOnlyCollection<AiModel>> GetAvailableModelsAsync(
         CancellationToken cancellationToken
     )
     {
@@ -307,9 +420,13 @@ public sealed class AiDefaultProfilesInitializer(
         string TemplateDescription,
         string SystemPrompt,
         AiRoutingMode RoutingMode,
+        AiResponseFormat ResponseFormat,
         decimal Temperature,
         int MaximumOutputTokens,
         int TimeoutSeconds,
-        DefaultModelPreference ModelPreference
+        string? JsonSchema,
+        AiModelCapability RequiredCapability,
+        DefaultModelPreference ModelPreference,
+        bool EnforceConfiguration
     );
 }

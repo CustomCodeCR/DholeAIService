@@ -128,14 +128,31 @@ public sealed class AiExecutionOrchestrator(
             ? input.JsonSchemaOverride
             : context.Profile.JsonSchema;
 
+        /*
+         * Timeout total del perfil. Antes cada modelo podía consumir el timeout completo
+         * de su conexión y el cliente gRPC terminaba cancelando a mitad de un fallback.
+         * El token externo se conserva para persistencia; este token solo limita proveedor(es).
+         */
+        using var profileTimeout = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken
+        );
+        profileTimeout.CancelAfter(TimeSpan.FromSeconds(context.Profile.TimeoutSeconds));
+
         foreach (var candidate in context.Candidates.Select((value, index) => (value, index)))
         {
+            if (profileTimeout.IsCancellationRequested)
+            {
+                lastError = AiApplicationErrors.ProviderTimeout;
+                break;
+            }
+
             var response = await ExecuteChatAttemptAsync(
                 context,
                 candidate.value,
                 true,
                 schema,
-                cancellationToken
+                cancellationToken,
+                profileTimeout.Token
             );
 
             if (response.IsSuccess)
@@ -171,12 +188,25 @@ public sealed class AiExecutionOrchestrator(
                 lastError,
                 cancellationToken
             );
+
+            if (profileTimeout.IsCancellationRequested)
+            {
+                lastError = AiApplicationErrors.ProviderTimeout;
+                break;
+            }
         }
+
+        var failureCode = lastError.Code == AiApplicationErrors.ProviderTimeout.Code
+            ? AiApplicationErrors.ProviderTimeout.Code
+            : "AI.InvalidStructuredOutput";
+        var failureMessage = lastError.Code == AiApplicationErrors.ProviderTimeout.Code
+            ? AiApplicationErrors.ProviderTimeout.Message
+            : "Ningún modelo devolvió una respuesta estructurada válida.";
 
         await FailExecutionAsync(
             context.Execution,
-            "AI.InvalidStructuredOutput",
-            "Ningún modelo devolvió una respuesta estructurada válida.",
+            failureCode,
+            failureMessage,
             input,
             cancellationToken
         );
@@ -567,7 +597,8 @@ public sealed class AiExecutionOrchestrator(
         AiModelCandidate candidate,
         bool structured,
         string? jsonSchema,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        CancellationToken? providerCancellationToken = null
     )
     {
         var attempt = executionContext.Execution.StartAttempt(
@@ -594,7 +625,7 @@ public sealed class AiExecutionOrchestrator(
                     jsonSchema
                 ),
                 providerContext,
-                cancellationToken
+                providerCancellationToken ?? cancellationToken
             );
 
             var cost = CalculateChatCost(

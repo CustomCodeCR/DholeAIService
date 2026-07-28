@@ -5,9 +5,9 @@ public static class AiConstants
 {
     public const string ServiceName = "AI";
 
-    public const int DefaultTimeoutSeconds = 120;
+    public const int DefaultTimeoutSeconds = 300;
     public const int MinimumTimeoutSeconds = 1;
-    public const int MaximumTimeoutSeconds = 600;
+    public const int MaximumTimeoutSeconds = 3_600;
     public const decimal DefaultTemperature = 0.2m;
     public const decimal MinimumTemperature = 0m;
     public const decimal MaximumTemperature = 2m;

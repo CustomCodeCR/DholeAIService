@@ -5,5 +5,5 @@ public sealed record CreateAiConnectionRequest(
     string ProviderType,
     string BaseUrl,
     string? SecretReference,
-    int TimeoutSeconds = 120
+    int TimeoutSeconds = 300
 );

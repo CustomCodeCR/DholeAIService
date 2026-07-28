@@ -43,9 +43,18 @@ public sealed class AiDefaultProfilesInitializer(
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "originPort": { "type": ["string", "null"] },
-                  "portOfExit": { "type": ["string", "null"] },
-                  "destinationPort": { "type": ["string", "null"] },
+                  "pol": {
+                    "type": ["string", "null"],
+                    "description": "POL / origin / port of loading."
+                  },
+                  "poe": {
+                    "type": ["string", "null"],
+                    "description": "Imported route destination. Source headers POE, POD, Destination, Port of Discharge, Place of Delivery and Final Destination all belong here."
+                  },
+                  "pod": {
+                    "type": ["string", "null"],
+                    "description": "Always null for imported tariffs. Official POD is assigned manually in Pricing."
+                  },
                   "containerType": { "type": ["string", "null"] },
                   "carrier": { "type": ["string", "null"] },
                   "agent": { "type": ["string", "null"] },
@@ -67,8 +76,11 @@ public sealed class AiDefaultProfilesInitializer(
                   "remarks": { "type": ["string", "null"] }
                 },
                 "required": [
-                  "originPort", "destinationPort", "containerType",
-                  "carrier", "currency", "oceanFreight"
+                  "pol", "poe", "pod", "containerType", "carrier", "agent",
+                  "commodity", "currency", "freeDays", "transitDays",
+                  "validFrom", "validTo", "oceanFreight", "originCharges",
+                  "destinationCharges", "surcharges", "totalCost", "totalSale",
+                  "profit", "margin", "spaceComment", "remarks"
                 ]
               }
             },
@@ -118,10 +130,15 @@ public sealed class AiDefaultProfilesInitializer(
                 Reglas:
                 - Extrae solo valores explícitos; nunca inventes puertos, naviera, agente, moneda, fechas, montos, días libres o tránsito.
                 - Copia POL, POE, POD, naviera, agente, contenedor y moneda tal como aparecen en el correo o documento. No los traduzcas, completes ni reemplaces por nombres que recuerdes: DataExtraction será el único responsable de compararlos y estandarizarlos contra Config.
-                - Cada combinación de ruta y contenedor produce una fila independiente.
-                - Usa exactamente estos nombres en cada fila: originPort, portOfExit, destinationPort, containerType, carrier, agent, commodity, currency, freeDays, transitDays, validFrom, validTo, oceanFreight, originCharges, destinationCharges, surcharges, totalCost, totalSale, profit, margin, spaceComment y remarks. No traduzcas ni cambies los nombres.
-                - originPort = POL, portOfExit = POE y destinationPort = POD.
-                - Normaliza contenedores únicamente cuando sea claro: 20GP, 40GP, 40HC o 45HC.
+                - Los grupos de Config son siempre: carriers, pol, pod, poe, currencies, agents, container-types y pricing-imports-profiles.
+                - Cada combinación de POL + POE + naviera + contenedor produce una fila independiente.
+                - Si un único monto aplica a varios equipos, expándelo. Por ejemplo, 40SV/40ST/40DV/40GP junto con 40HC/40HQ produce dos filas distintas con el mismo flete: una 40DV y otra 40HC. Nunca combines ambos equipos en una sola fila.
+                - Usa exactamente estos nombres en cada fila: pol, poe, pod, containerType, carrier, agent, commodity, currency, freeDays, transitDays, validFrom, validTo, oceanFreight, originCharges, destinationCharges, surcharges, totalCost, totalSale, profit, margin, spaceComment y remarks. No traduzcas ni cambies los nombres.
+                - pol es el puerto de origen o Port of Loading.
+                - poe es el destino de la tarifa importada. Cualquier etiqueta POE, POD, Destination, Destination Port, Puerto destino, Port of Discharge, Place of Delivery, Delivery Place, Arrival Port, Gateway o Final Destination se guarda en poe.
+                - pod siempre debe ser null. El POD de la tarifa oficial se selecciona manualmente en Pricing y nunca se deduce de la fuente.
+                - agent solo se llena cuando una columna o campo de la tarifa lo identifica expresamente como Agent/Agente. Nunca deduzcas el agente desde el remitente, la firma, el dominio del correo, el cargo del ejecutivo o la empresa que envía el documento.
+                - Normaliza contenedores únicamente cuando sea claro: 20DV, 40DV, 40HC o 45HC. 40SV, 40ST, 40STD, 40GP y 40DV representan 40DV; 40HQ representa 40HC.
                 - Usa moneda ISO y fechas YYYY-MM-DD cuando puedan determinarse.
                 - Todos los montos, días, margen y confianza deben ser números JSON sin símbolos de moneda, porcentajes ni separadores de miles.
                 - oceanFreight es el flete marítimo por contenedor.
@@ -133,8 +150,8 @@ public sealed class AiDefaultProfilesInitializer(
             RoutingMode: AiRoutingMode.PriorityFallback,
             ResponseFormat: AiResponseFormat.JsonSchema,
             Temperature: 0.05m,
-            MaximumOutputTokens: 1_600,
-            TimeoutSeconds: 240,
+            MaximumOutputTokens: 12_288,
+            TimeoutSeconds: 900,
             JsonSchema: PricingEmailJsonSchema,
             RequiredCapability: AiModelCapability.StructuredOutput,
             ModelPreference: DefaultModelPreference.AnalysisQuality,

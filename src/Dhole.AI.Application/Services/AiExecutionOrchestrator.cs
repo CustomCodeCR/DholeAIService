@@ -612,7 +612,11 @@ public sealed class AiExecutionOrchestrator(
 
         try
         {
-            var providerContext = await BuildProviderContextAsync(candidate, cancellationToken);
+            var providerContext = await BuildProviderContextAsync(
+                candidate,
+                cancellationToken,
+                executionContext.Profile.TimeoutSeconds
+            );
 
             var provider = providerResolver.ResolveChatProvider(candidate.Connection.ProviderType);
 
@@ -925,7 +929,8 @@ public sealed class AiExecutionOrchestrator(
 
     private async Task<AiProviderContext> BuildProviderContextAsync(
         AiModelCandidate candidate,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        int? minimumTimeoutSeconds = null
     )
     {
         var secret = await secretResolver.ResolveAsync(
@@ -933,13 +938,19 @@ public sealed class AiExecutionOrchestrator(
             cancellationToken
         );
 
+        // The profile owns the execution budget. A connection created with the old
+        // 120-second default must not cancel a slower local model before that budget.
+        var effectiveTimeoutSeconds = minimumTimeoutSeconds.HasValue
+            ? Math.Max(candidate.Connection.TimeoutSeconds, minimumTimeoutSeconds.Value)
+            : candidate.Connection.TimeoutSeconds;
+
         return new AiProviderContext(
             candidate.Connection.Id,
             candidate.Connection.Name,
             candidate.Connection.ProviderType,
             candidate.Connection.BaseUrl,
             secret,
-            candidate.Connection.TimeoutSeconds,
+            effectiveTimeoutSeconds,
             candidate.Model.Id,
             candidate.Model.Name,
             candidate.Model.ExternalModelId,

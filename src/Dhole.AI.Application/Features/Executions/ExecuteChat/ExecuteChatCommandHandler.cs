@@ -17,7 +17,16 @@ public sealed class ExecuteChatCommandHandler(IAiExecutionOrchestrator orchestra
             new ExecuteAiChatInput(
                 command.ProfileKey,
                 command
-                    .Messages.Select(item => new AiExecutionMessageInput(item.Role, item.Content))
+                    .Messages.Select(item => new AiExecutionMessageInput(
+                        item.Role,
+                        item.Content,
+                        item.Images?
+                            .Select(image => new AiExecutionImageInput(
+                                image.MimeType,
+                                image.Base64Data
+                            ))
+                            .ToArray()
+                    ))
                     .ToArray(),
                 command
                     .Variables?.Select(item => new AiExecutionVariableInput(item.Name, item.Value))

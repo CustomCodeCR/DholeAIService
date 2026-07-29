@@ -52,7 +52,8 @@ public sealed class AiPromptCompiler : IAiPromptCompiler
         result.AddRange(
             messages.Select(message => new AiProviderMessage(
                 NormalizeRole(message.Role),
-                message.Content
+                message.Content,
+                message.Images
             ))
         );
 

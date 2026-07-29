@@ -17,11 +17,35 @@ internal static class OpenAiCompatibleMapper
 
         foreach (var message in request.Messages)
         {
+            JsonNode content = JsonValue.Create(message.Content)!;
+
+            if (message.Images?.Count > 0)
+            {
+                var parts = new JsonArray
+                {
+                    new JsonObject { ["type"] = "text", ["text"] = message.Content },
+                };
+
+                foreach (var image in message.Images)
+                {
+                    parts.Add(new JsonObject
+                    {
+                        ["type"] = "image_url",
+                        ["image_url"] = new JsonObject
+                        {
+                            ["url"] = $"data:{image.MimeType};base64,{image.Base64Data}",
+                        },
+                    });
+                }
+
+                content = parts;
+            }
+
             messages.Add(
                 new JsonObject
                 {
                     ["role"] = NormalizeRole(message.Role),
-                    ["content"] = message.Content,
+                    ["content"] = content,
                 }
             );
         }

@@ -40,7 +40,9 @@ public sealed class AiExecutionOrchestrator(
         var contextResult = await PrepareAsync(
             input.ProfileKey,
             AiExecutionType.Chat,
-            AiModelCapability.Chat,
+            HasImages(input.Messages)
+                ? AiModelCapability.Chat | AiModelCapability.Vision
+                : AiModelCapability.Chat,
             input.CorrelationId,
             input.RequestHash,
             input.RequestedBy,
@@ -106,7 +108,9 @@ public sealed class AiExecutionOrchestrator(
         var contextResult = await PrepareAsync(
             input.ProfileKey,
             AiExecutionType.Structured,
-            AiModelCapability.StructuredOutput,
+            HasImages(input.Messages)
+                ? AiModelCapability.StructuredOutput | AiModelCapability.Vision
+                : AiModelCapability.StructuredOutput,
             input.CorrelationId,
             input.RequestHash,
             input.RequestedBy,
@@ -500,7 +504,13 @@ public sealed class AiExecutionOrchestrator(
 
         var compiled = promptCompiler.Compile(
             template,
-            messages.Select(item => new AiProviderMessage(item.Role, item.Content)).ToArray(),
+            messages.Select(item => new AiProviderMessage(
+                item.Role,
+                item.Content,
+                item.Images?
+                    .Select(image => new AiProviderImage(image.MimeType, image.Base64Data))
+                    .ToArray()
+            )).ToArray(),
             variables?.Select(item => new AiPromptVariable(item.Name, item.Value)).ToArray()
         );
 
@@ -1019,6 +1029,11 @@ public sealed class AiExecutionOrchestrator(
     private static decimal CalculateEmbeddingCost(AiModel model, int inputTokens)
     {
         return inputTokens / 1_000_000m * (model.InputCostPerMillionTokens ?? 0m);
+    }
+
+    private static bool HasImages(IReadOnlyCollection<AiExecutionMessageInput> messages)
+    {
+        return messages.Any(message => message.Images?.Count > 0);
     }
 
     private static AiFinishReason ParseFinishReason(string? finishReason)

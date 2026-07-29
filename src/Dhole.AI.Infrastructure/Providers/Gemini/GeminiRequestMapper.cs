@@ -25,11 +25,24 @@ internal static class GeminiRequestMapper
             )
         )
         {
+            var parts = new JsonArray { new JsonObject { ["text"] = message.Content } };
+            foreach (var image in message.Images ?? [])
+            {
+                parts.Add(new JsonObject
+                {
+                    ["inlineData"] = new JsonObject
+                    {
+                        ["mimeType"] = image.MimeType,
+                        ["data"] = image.Base64Data,
+                    },
+                });
+            }
+
             contents.Add(
                 new JsonObject
                 {
                     ["role"] = NormalizeRole(message.Role),
-                    ["parts"] = new JsonArray { new JsonObject { ["text"] = message.Content } },
+                    ["parts"] = parts,
                 }
             );
         }

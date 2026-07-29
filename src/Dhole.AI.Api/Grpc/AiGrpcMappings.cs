@@ -11,7 +11,19 @@ internal static class AiGrpcMappings
         IEnumerable<AiMessageGrpcModel> messages
     )
     {
-        return messages.Select(x => new AiMessageRequest(x.Role, x.Content)).ToArray();
+        return messages
+            .Select(x => new AiMessageRequest(
+                x.Role,
+                x.Content,
+                x.Images
+                    .Where(image =>
+                        !string.IsNullOrWhiteSpace(image.MimeType)
+                        && !string.IsNullOrWhiteSpace(image.Base64Data)
+                    )
+                    .Select(image => new AiImageRequest(image.MimeType, image.Base64Data))
+                    .ToArray()
+            ))
+            .ToArray();
     }
 
     public static IReadOnlyCollection<AiPromptVariableRequest> ToVariables(

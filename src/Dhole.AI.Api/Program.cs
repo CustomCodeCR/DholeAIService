@@ -17,6 +17,16 @@ var builder = WebApplication.CreateBuilder(args);
 
 const string CorsPolicyName = "DholeWebCors";
 
+var maxGrpcMessageSizeBytes = ReadPositiveInt(
+    builder.Configuration["Grpc:Server:MaxMessageSizeBytes"],
+    64 * 1024 * 1024
+);
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = maxGrpcMessageSizeBytes;
+});
+
 builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
 
 builder.Services.AddCustomCodeApiWithSwagger(title: "Dhole AI Service", version: "v1");
@@ -39,7 +49,12 @@ builder.Services.AddCors(options =>
     );
 });
 
-builder.Services.AddGrpc();
+builder.Services.AddGrpc(options =>
+{
+    options.MaxReceiveMessageSize = maxGrpcMessageSizeBytes;
+    options.MaxSendMessageSize = maxGrpcMessageSizeBytes;
+    options.EnableDetailedErrors = builder.Environment.IsDevelopment();
+});
 
 builder.Services.AddApplication();
 builder.Services.AddPersistence(builder.Configuration);
@@ -94,5 +109,10 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.Run();
+
+static int ReadPositiveInt(string? value, int fallback)
+{
+    return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
+}
 
 public partial class Program { }

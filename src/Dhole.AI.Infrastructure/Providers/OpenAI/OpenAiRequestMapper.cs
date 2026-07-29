@@ -16,11 +16,36 @@ internal static class OpenAiRequestMapper
 
         foreach (var message in request.Messages)
         {
+            JsonNode content = JsonValue.Create(message.Content)!;
+
+            if (message.Images?.Count > 0)
+            {
+                var parts = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["type"] = "input_text",
+                        ["text"] = message.Content,
+                    },
+                };
+
+                foreach (var image in message.Images)
+                {
+                    parts.Add(new JsonObject
+                    {
+                        ["type"] = "input_image",
+                        ["image_url"] = BuildDataUrl(image),
+                    });
+                }
+
+                content = parts;
+            }
+
             input.Add(
                 new JsonObject
                 {
                     ["role"] = NormalizeRole(message.Role),
-                    ["content"] = message.Content,
+                    ["content"] = content,
                 }
             );
         }
@@ -76,6 +101,11 @@ internal static class OpenAiRequestMapper
             ["input"] = inputs,
             ["encoding_format"] = "float",
         };
+    }
+
+    private static string BuildDataUrl(AiProviderImage image)
+    {
+        return $"data:{image.MimeType};base64,{image.Base64Data}";
     }
 
     private static string NormalizeRole(string role)

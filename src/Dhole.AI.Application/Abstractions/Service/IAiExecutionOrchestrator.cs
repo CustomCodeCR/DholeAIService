@@ -3,7 +3,13 @@ using Dhole.AI.Contracts.Executions.Response;
 
 namespace Dhole.AI.Application.Abstractions.Services;
 
-public sealed record AiExecutionMessageInput(string Role, string Content);
+public sealed record AiExecutionImageInput(string MimeType, string Base64Data);
+
+public sealed record AiExecutionMessageInput(
+    string Role,
+    string Content,
+    IReadOnlyCollection<AiExecutionImageInput>? Images = null
+);
 
 public sealed record AiExecutionVariableInput(string Name, string Value);
 

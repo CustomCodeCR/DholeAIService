@@ -16,13 +16,24 @@ internal static class OllamaRequestMapper
 
         foreach (var message in request.Messages)
         {
-            messages.Add(
-                new JsonObject
+            var mapped = new JsonObject
+            {
+                ["role"] = NormalizeRole(message.Role),
+                ["content"] = message.Content,
+            };
+
+            if (message.Images?.Count > 0)
+            {
+                var images = new JsonArray();
+                foreach (var image in message.Images)
                 {
-                    ["role"] = NormalizeRole(message.Role),
-                    ["content"] = message.Content,
+                    images.Add(image.Base64Data);
                 }
-            );
+
+                mapped["images"] = images;
+            }
+
+            messages.Add(mapped);
         }
 
         var payload = new JsonObject
@@ -42,18 +53,13 @@ internal static class OllamaRequestMapper
         if (request.RequiresStructuredOutput)
         {
             /*
-             * Los modelos de razonamiento pueden consumir la mayor parte del timeout
-             * pensando antes de emitir un JSON corto. Para extracción estructurada no
-             * necesitamos ese razonamiento visible ni miles de tokens de salida.
+             * Desactiva el razonamiento visible para no consumir el timeout antes del JSON,
+             * pero conserva el presupuesto completo del perfil: un tarifario puede producir
+             * muchas filas y no debe truncarse a 1 600 tokens.
              */
             payload["think"] = false;
             payload["format"] =
                 ProviderJson.ParseNode(request.JsonSchema) ?? JsonValue.Create("json");
-
-            if (payload["options"] is JsonObject options)
-            {
-                options["num_predict"] = Math.Min(request.MaximumOutputTokens, 1_600);
-            }
         }
 
         return payload;

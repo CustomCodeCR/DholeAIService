@@ -129,6 +129,7 @@ public sealed class GeminiModelDiscoveryProvider(IHttpClientFactory httpClientFa
             result |= AiModelCapability.Chat;
             result |= AiModelCapability.Streaming;
             result |= AiModelCapability.StructuredOutput;
+            result |= AiModelCapability.Vision;
         }
 
         if (values.Contains("embedContent") || values.Contains("batchEmbedContents"))

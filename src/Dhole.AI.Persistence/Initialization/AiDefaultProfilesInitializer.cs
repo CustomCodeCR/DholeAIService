@@ -49,17 +49,22 @@ public sealed class AiDefaultProfilesInitializer(
                   },
                   "poe": {
                     "type": ["string", "null"],
-                    "description": "Imported route destination. Source headers POE, POD, Destination, Port of Discharge, Place of Delivery and Final Destination all belong here."
+                    "description": "POE. Destination Port, Destination, Port of Discharge, arrival seaport or gateway belong here."
                   },
                   "pod": {
                     "type": ["string", "null"],
-                    "description": "Always null for imported tariffs. Official POD is assigned manually in Pricing."
+                    "description": "POD only when explicitly identified as POD, Place of Delivery or Final Destination. Never copy POE here."
                   },
                   "containerType": { "type": ["string", "null"] },
                   "carrier": { "type": ["string", "null"] },
                   "agent": { "type": ["string", "null"] },
                   "commodity": { "type": ["string", "null"] },
-                  "currency": { "type": ["string", "null"] },
+                  "currency": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 3,
+                    "description": "ISO 4217 currency code. USD is mandatory when the source does not explicitly prove another currency."
+                  },
                   "freeDays": { "type": ["integer", "null"], "minimum": 0 },
                   "transitDays": { "type": ["integer", "null"], "minimum": 0 },
                   "validFrom": { "type": ["string", "null"] },
@@ -128,18 +133,22 @@ public sealed class AiDefaultProfilesInitializer(
                 Devuelve únicamente el objeto JSON del esquema, sin markdown, explicaciones ni texto adicional.
 
                 Reglas:
-                - Extrae solo valores explícitos; nunca inventes puertos, naviera, agente, moneda, fechas, montos, días libres o tránsito.
-                - Copia POL, POE, POD, naviera, agente, contenedor y moneda tal como aparecen en el correo o documento. No los traduzcas, completes ni reemplaces por nombres que recuerdes: DataExtraction será el único responsable de compararlos y estandarizarlos contra Config.
+                - Extrae solo valores explícitos; nunca inventes puertos, naviera, agente, fechas, montos, días libres o tránsito.
+                - currency es obligatorio en todas las filas. La moneda por defecto es USD y usarla cuando no existe otra divisa explícita es una regla de negocio, no una invención. Solo devuelve otra moneda cuando la fuente la indique mediante código, nombre o símbolo inequívoco.
+                - Usa previousExtraction como borrador, pero vuelve a comprobar cada dato contra sourceContent o la imagen adjunta. Corrige columnas, filas combinadas, fechas, montos y equipos antes de responder.
+                - Repara caracteres dañados por OCR o codificación: MO�N debe interpretarse como MOIN cuando Config contiene Moín; PUERTO CORT�S como Puerto Cortés; MoÃ­n como Moín. Un carácter U+FFFD representa una posición desconocida, no una letra que deba eliminarse.
+                - catalogHints contiene nombres reales de Config. Cuando exista una coincidencia inequívoca, devuelve exactamente el name canónico de Config; nunca uses recuerdos externos ni inventes un catálogo.
+                - En nombres compuestos prioriza el nombre principal: TIANJIN (XINGANG) corresponde a Tianjin; YANTIAN (SHENZHEN) corresponde a Yantian/Shenzhen. No elijas el alias entre paréntesis si el nombre principal existe en Config.
+                - Los sufijos legales S.A., S.A.S., Ltda., LLC, Inc. o equivalentes no cambian la identidad de un agente, pero no aceptes coincidencias parciales que puedan referirse a otra empresa.
                 - Los grupos de Config son siempre: carriers, pol, pod, poe, currencies, agents, container-types y pricing-imports-profiles.
-                - Cada combinación de POL + POE + naviera + contenedor produce una fila independiente.
-                - Si un único monto aplica a varios equipos, expándelo. Por ejemplo, 40SV/40ST/40DV/40GP junto con 40HC/40HQ produce dos filas distintas con el mismo flete: una 40DV y otra 40HC. Nunca combines ambos equipos en una sola fila.
+                - Cada combinación de ruta y contenedor produce una fila independiente.
                 - Usa exactamente estos nombres en cada fila: pol, poe, pod, containerType, carrier, agent, commodity, currency, freeDays, transitDays, validFrom, validTo, oceanFreight, originCharges, destinationCharges, surcharges, totalCost, totalSale, profit, margin, spaceComment y remarks. No traduzcas ni cambies los nombres.
                 - pol es el puerto de origen o Port of Loading.
-                - poe es el destino de la tarifa importada. Cualquier etiqueta POE, POD, Destination, Destination Port, Puerto destino, Port of Discharge, Place of Delivery, Delivery Place, Arrival Port, Gateway o Final Destination se guarda en poe.
-                - pod siempre debe ser null. El POD de la tarifa oficial se selecciona manualmente en Pricing y nunca se deduce de la fuente.
-                - agent solo se llena cuando una columna o campo de la tarifa lo identifica expresamente como Agent/Agente. Nunca deduzcas el agente desde el remitente, la firma, el dominio del correo, el cargo del ejecutivo o la empresa que envía el documento.
-                - Normaliza contenedores únicamente cuando sea claro: 20DV, 40DV, 40HC o 45HC. 40SV, 40ST, 40STD, 40GP y 40DV representan 40DV; 40HQ representa 40HC.
-                - Usa moneda ISO y fechas YYYY-MM-DD cuando puedan determinarse.
+                - poe es el puerto marítimo de destino/entrada. Cualquier etiqueta Destination, Destination Port, Puerto destino, Port of Discharge, Arrival Port, Gateway o POE se guarda en poe.
+                - pod es otro destino: solo se llena cuando la fuente indica explícitamente POD, Place of Delivery, Delivery Place o Final Destination.
+                - Nunca copies poe en pod ni deduzcas pod a partir de poe. Si no existe un POD explícito, devuelve pod=null.
+                - Normaliza contenedores únicamente cuando sea claro: 20GP, 40GP, 40HC o 45HC.
+                - Usa moneda ISO y fechas YYYY-MM-DD cuando puedan determinarse. Si no hay evidencia de otra divisa, currency debe ser "USD".
                 - Todos los montos, días, margen y confianza deben ser números JSON sin símbolos de moneda, porcentajes ni separadores de miles.
                 - oceanFreight es el flete marítimo por contenedor.
                 - Para datos ausentes usa null cuando el esquema permita null; no inventes texto de relleno.
@@ -150,8 +159,8 @@ public sealed class AiDefaultProfilesInitializer(
             RoutingMode: AiRoutingMode.PriorityFallback,
             ResponseFormat: AiResponseFormat.JsonSchema,
             Temperature: 0.05m,
-            MaximumOutputTokens: 12_288,
-            TimeoutSeconds: 900,
+            MaximumOutputTokens: 8_192,
+            TimeoutSeconds: 1800,
             JsonSchema: PricingEmailJsonSchema,
             RequiredCapability: AiModelCapability.StructuredOutput,
             ModelPreference: DefaultModelPreference.AnalysisQuality,
@@ -301,18 +310,52 @@ public sealed class AiDefaultProfilesInitializer(
             var hasIncompatibleConfiguredModel = profile.Models.Any(model =>
                 !compatibleModelIds.Contains(model.ModelId)
             );
+            var visionCompatibleModels = definition.Key == "pricing-email-analysis"
+                ? availableModels
+                    .Where(model => model.Supports(
+                        definition.RequiredCapability | AiModelCapability.Vision
+                    ))
+                    .ToArray()
+                : [];
+            var visionCompatibleModelIds = visionCompatibleModels
+                .Select(model => model.Id)
+                .ToHashSet();
+            var shouldConfigureVisionFallback = visionCompatibleModels.Length > 0;
+            var hasVisionConfiguredModel = profile.Models.Any(model =>
+                visionCompatibleModelIds.Contains(model.ModelId)
+            );
 
             if (
                 profile.Models.Count == 0
                 || !hasCompatibleConfiguredModel
                 || (definition.EnforceConfiguration && hasIncompatibleConfiguredModel)
+                || (shouldConfigureVisionFallback && !hasVisionConfiguredModel)
             )
             {
                 var selectedModels = SelectModels(
                     compatibleModels,
                     definition.ModelPreference,
                     maximumModels
-                );
+                ).ToList();
+
+                if (shouldConfigureVisionFallback)
+                {
+                    var visionModel = SelectModels(
+                        visionCompatibleModels,
+                        definition.ModelPreference,
+                        1
+                    ).First();
+
+                    if (selectedModels.All(model => model.Id != visionModel.Id))
+                    {
+                        if (selectedModels.Count >= maximumModels)
+                        {
+                            selectedModels.RemoveAt(selectedModels.Count - 1);
+                        }
+
+                        selectedModels.Add(visionModel);
+                    }
+                }
 
                 if (selectedModels.Count == 0)
                 {

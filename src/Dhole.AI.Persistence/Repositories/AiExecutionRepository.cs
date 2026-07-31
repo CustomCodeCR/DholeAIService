@@ -134,7 +134,11 @@ public sealed class AiExecutionRepository(ServiceDbContext dbContext)
             header.SelectedProviderType?.ToString(),
             CreateTokenUsage(header.InputTokens, header.OutputTokens),
             header.EstimatedCost,
-            header.DurationMilliseconds,
+            ResolveDuration(
+                header.Status == AiExecutionStatus.Running,
+                header.StartedAtUtc,
+                header.DurationMilliseconds
+            ),
             header.FinishReason.ToString(),
             header.ErrorCode,
             header.ErrorMessage,
@@ -272,7 +276,11 @@ public sealed class AiExecutionRepository(ServiceDbContext dbContext)
                 item.ModelName,
                 CreateTokenUsage(item.InputTokens, item.OutputTokens),
                 item.EstimatedCost,
-                item.DurationMilliseconds,
+                ResolveDuration(
+                    item.Status == AiExecutionStatus.Running,
+                    item.StartedAtUtc,
+                    item.DurationMilliseconds
+                ),
                 item.StartedAtUtc,
                 item.CompletedAtUtc,
                 item.ErrorCode
@@ -303,7 +311,11 @@ public sealed class AiExecutionRepository(ServiceDbContext dbContext)
             attempt.CompletedAtUtc,
             CreateTokenUsage(attempt.InputTokens, attempt.OutputTokens),
             attempt.EstimatedCost,
-            attempt.DurationMilliseconds,
+            ResolveDuration(
+                attempt.Status == AiAttemptStatus.Running,
+                attempt.StartedAtUtc,
+                attempt.DurationMilliseconds
+            ),
             attempt.FinishReason.ToString(),
             attempt.ErrorCode,
             attempt.ErrorMessage
@@ -314,6 +326,24 @@ public sealed class AiExecutionRepository(ServiceDbContext dbContext)
     {
         return new AiTokenUsageDto(inputTokens, outputTokens, inputTokens + outputTokens);
     }
+
+    private static long ResolveDuration(
+        bool isRunning,
+        DateTime? startedAtUtc,
+        long storedDurationMilliseconds
+    )
+    {
+        if (!isRunning || !startedAtUtc.HasValue)
+        {
+            return storedDurationMilliseconds;
+        }
+
+        return Math.Max(
+            storedDurationMilliseconds,
+            (long)(DateTime.UtcNow - startedAtUtc.Value).TotalMilliseconds
+        );
+    }
+
 
     private sealed record ExecutionProjection(
         Guid Id,

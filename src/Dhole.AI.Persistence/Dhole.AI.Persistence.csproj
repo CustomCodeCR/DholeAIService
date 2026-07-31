@@ -11,8 +11,8 @@
     <PackageReference Include="CustomCodeFramework.Postgres" Version="0.2.0" />
     <PackageReference Include="CustomCodeFramework.Postgres.EntityFramework" Version="0.2.0" />
     <PackageReference Include="CustomCodeFramework.Messaging" Version="0.2.0" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.9" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
   </ItemGroup>
 
   <ItemGroup>

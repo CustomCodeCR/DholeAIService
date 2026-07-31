@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace Dhole.AI.Infrastructure.Providers.Common;
@@ -69,12 +70,59 @@ internal static class ProviderHttp
             ? null
             : await response.Content.ReadAsStringAsync(cancellationToken);
 
+        var providerMessage = ReadProviderError(body);
+        var message = $"El proveedor respondió con el estado HTTP "
+            + $"{(int)response.StatusCode} "
+            + $"({response.ReasonPhrase}).";
+
+        if (!string.IsNullOrWhiteSpace(providerMessage))
+        {
+            message += $" Detalle del proveedor: {providerMessage}";
+        }
+
         throw new AiProviderHttpException(
             response.StatusCode,
             body,
-            $"El proveedor respondió con el estado HTTP "
-                + $"{(int)response.StatusCode} "
-                + $"({response.ReasonPhrase})."
+            message
         );
     }
+    private static string? ReadProviderError(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (
+                document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("error", out var error)
+            )
+            {
+                return Limit(error.GetString(), 1_000);
+            }
+        }
+        catch (JsonException)
+        {
+            // Algunos proxies devuelven texto plano o HTML. Se conserva un extracto.
+        }
+
+        return Limit(body, 1_000);
+    }
+
+    private static string? Limit(string? value, int maximumLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = value.Trim();
+        return normalized.Length <= maximumLength
+            ? normalized
+            : normalized[..maximumLength];
+    }
+
 }

@@ -49,25 +49,54 @@ public sealed class AiExecutionOrchestrator(
             input.RequestedByName,
             input.Messages,
             input.Variables,
+            input,
             cancellationToken
         );
 
         if (contextResult.IsFailure)
         {
+            await AuditRejectedRequestAsync(
+                input,
+                input.ProfileKey,
+                AiExecutionType.Chat,
+                input.CorrelationId,
+                input.RequestedBy,
+                input.RequestedByName,
+                contextResult.Error,
+                cancellationToken
+            );
             return Result.Failure<AiChatResultDto>(contextResult.Error);
         }
 
         var context = contextResult.Value;
         var lastError = AiApplicationErrors.ExecutionFailed;
 
+        using var profileTimeout = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken
+        );
+        profileTimeout.CancelAfter(TimeSpan.FromSeconds(context.Profile.TimeoutSeconds));
+
         foreach (var candidate in context.Candidates.Select((value, index) => (value, index)))
         {
+            if (profileTimeout.IsCancellationRequested)
+            {
+                lastError = AiApplicationErrors.ProviderTimeout;
+                break;
+            }
+
+            using var attemptTimeout = CreateProviderAttemptTimeout(
+                profileTimeout.Token,
+                context.Profile.TimeoutSeconds,
+                context.Candidates.Count
+            );
+
             var result = await ExecuteChatAttemptAsync(
                 context,
                 candidate.value,
                 false,
                 null,
-                cancellationToken
+                cancellationToken,
+                attemptTimeout.Token
             );
 
             if (result.IsSuccess)
@@ -87,12 +116,25 @@ public sealed class AiExecutionOrchestrator(
                 result.Error,
                 cancellationToken
             );
+
+            if (profileTimeout.IsCancellationRequested)
+            {
+                lastError = AiApplicationErrors.ProviderTimeout;
+                break;
+            }
         }
+
+        var failureCode = lastError.Code == AiApplicationErrors.ProviderTimeout.Code
+            ? AiApplicationErrors.ProviderTimeout.Code
+            : "AI.AllProvidersFailed";
+        var failureMessage = lastError.Code == AiApplicationErrors.ProviderTimeout.Code
+            ? AiApplicationErrors.ProviderTimeout.Message
+            : "Todos los proveedores configurados fallaron.";
 
         await FailExecutionAsync(
             context.Execution,
-            "AI.AllProvidersFailed",
-            "Todos los proveedores configurados fallaron.",
+            failureCode,
+            failureMessage,
             input,
             cancellationToken
         );
@@ -117,11 +159,22 @@ public sealed class AiExecutionOrchestrator(
             null,
             input.Messages,
             input.Variables,
+            input,
             cancellationToken
         );
 
         if (contextResult.IsFailure)
         {
+            await AuditRejectedRequestAsync(
+                input,
+                input.ProfileKey,
+                AiExecutionType.Structured,
+                input.CorrelationId,
+                input.RequestedBy,
+                null,
+                contextResult.Error,
+                cancellationToken
+            );
             return Result.Failure<AiStructuredResultDto>(contextResult.Error);
         }
 
@@ -150,13 +203,19 @@ public sealed class AiExecutionOrchestrator(
                 break;
             }
 
+            using var attemptTimeout = CreateProviderAttemptTimeout(
+                profileTimeout.Token,
+                context.Profile.TimeoutSeconds,
+                context.Candidates.Count
+            );
+
             var response = await ExecuteChatAttemptAsync(
                 context,
                 candidate.value,
                 true,
                 schema,
                 cancellationToken,
-                profileTimeout.Token
+                attemptTimeout.Token
             );
 
             if (response.IsSuccess)
@@ -178,6 +237,47 @@ public sealed class AiExecutionOrchestrator(
                         CreateStructuredResult(context.Execution, candidate.value, validation.Value)
                     );
                 }
+
+                await audit.PublishAsync(
+                    new AiAuditEvent(
+                        EventType: AiAuditEventTypes.StructuredValidationFailed,
+                        Action: AiAuditActions.Failed,
+                        EntityType: AiAuditEntityTypes.Execution,
+                        EntityId: context.Execution.Id,
+                        ActorUserId: input.RequestedBy,
+                        Payload: new
+                        {
+                            Stage = "structured-validation",
+                            ExecutionId = context.Execution.Id,
+                            Attempt = context.Execution.Attempts
+                                .OrderByDescending(item => item.AttemptNumber)
+                                .Select(item => new
+                                {
+                                    item.Id,
+                                    item.AttemptNumber,
+                                    item.ConnectionId,
+                                    item.ModelId,
+                                    ProviderType = item.ProviderType.ToString(),
+                                    item.ExternalModelId,
+                                })
+                                .FirstOrDefault(),
+                            ServiceInput = input,
+                            JsonSchema = schema,
+                            ProviderContent = response.Value.Content,
+                            response.Value.RawResponseJson,
+                            ValidationError = validation.Error,
+                            context.Execution.CorrelationId,
+                            context.Execution.RequestHash,
+                        },
+                        Metadata: new
+                        {
+                            Stage = "structured-validation",
+                            Status = "Failed",
+                        },
+                        ErrorMessage: validation.Error.Message
+                    ),
+                    cancellationToken
+                );
             }
 
             lastError = response.IsFailure
@@ -225,6 +325,16 @@ public sealed class AiExecutionOrchestrator(
     {
         if (input.Inputs.Count == 0 || input.Inputs.Any(string.IsNullOrWhiteSpace))
         {
+            await AuditRejectedRequestAsync(
+                input,
+                input.ProfileKey,
+                AiExecutionType.Embeddings,
+                input.CorrelationId,
+                input.RequestedBy,
+                null,
+                AiApplicationErrors.ExecutionFailed,
+                cancellationToken
+            );
             return Result.Failure<AiEmbeddingsResultDto>(AiApplicationErrors.ExecutionFailed);
         }
 
@@ -235,11 +345,31 @@ public sealed class AiExecutionOrchestrator(
 
         if (profile is null || profile.IsDeleted)
         {
+            await AuditRejectedRequestAsync(
+                input,
+                input.ProfileKey,
+                AiExecutionType.Embeddings,
+                input.CorrelationId,
+                input.RequestedBy,
+                null,
+                AiErrors.ProfileNotFound,
+                cancellationToken
+            );
             return Result.Failure<AiEmbeddingsResultDto>(AiErrors.ProfileNotFound);
         }
 
         if (!profile.IsActive)
         {
+            await AuditRejectedRequestAsync(
+                input,
+                input.ProfileKey,
+                AiExecutionType.Embeddings,
+                input.CorrelationId,
+                input.RequestedBy,
+                null,
+                AiApplicationErrors.ProfileIsInactive,
+                cancellationToken
+            );
             return Result.Failure<AiEmbeddingsResultDto>(AiApplicationErrors.ProfileIsInactive);
         }
 
@@ -251,6 +381,16 @@ public sealed class AiExecutionOrchestrator(
 
         if (candidatesResult.IsFailure)
         {
+            await AuditRejectedRequestAsync(
+                input,
+                input.ProfileKey,
+                AiExecutionType.Embeddings,
+                input.CorrelationId,
+                input.RequestedBy,
+                null,
+                candidatesResult.Error,
+                cancellationToken
+            );
             return Result.Failure<AiEmbeddingsResultDto>(candidatesResult.Error);
         }
 
@@ -268,6 +408,62 @@ public sealed class AiExecutionOrchestrator(
 
         await executions.AddAsync(execution, cancellationToken);
 
+        await audit.PublishAsync(
+            new AiAuditEvent(
+                EventType: AiAuditEventTypes.ExecutionStarted,
+                Action: AiAuditActions.Started,
+                EntityType: AiAuditEntityTypes.Execution,
+                EntityId: execution.Id,
+                ActorUserId: input.RequestedBy,
+                After: AiAuditSnapshots.From(execution),
+                Payload: new
+                {
+                    execution.Id,
+                    execution.ProfileKey,
+                    ExecutionType = execution.ExecutionType.ToString(),
+                    execution.CorrelationId,
+                    execution.RequestHash,
+                }
+            ),
+            cancellationToken
+        );
+
+        await audit.PublishAsync(
+            new AiAuditEvent(
+                EventType: AiAuditEventTypes.ExecutionInputRecorded,
+                Action: AiAuditActions.InputRecorded,
+                EntityType: AiAuditEntityTypes.Execution,
+                EntityId: execution.Id,
+                ActorUserId: input.RequestedBy,
+                Payload: new
+                {
+                    Stage = "service-input",
+                    ExecutionId = execution.Id,
+                    ExecutionType = execution.ExecutionType.ToString(),
+                    ServiceInput = input,
+                    Candidates = candidatesResult.Value.Select(item => new
+                    {
+                        ConnectionId = item.Connection.Id,
+                        ConnectionName = item.Connection.Name,
+                        ProviderType = item.Connection.ProviderType.ToString(),
+                        item.Connection.BaseUrl,
+                        ModelId = item.Model.Id,
+                        ModelName = item.Model.Name,
+                        item.Model.ExternalModelId,
+                    }),
+                    execution.CorrelationId,
+                    execution.RequestHash,
+                },
+                Metadata: new
+                {
+                    Stage = "service-input",
+                    ExecutionType = execution.ExecutionType.ToString(),
+                    CandidateCount = candidatesResult.Value.Count,
+                }
+            ),
+            cancellationToken
+        );
+
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var candidates = candidatesResult.Value;
@@ -284,6 +480,43 @@ public sealed class AiExecutionOrchestrator(
 
             await unitOfWork.SaveChangesAsync(cancellationToken);
 
+            var providerRequest = new AiProviderEmbeddingRequest(input.Inputs);
+
+            await audit.PublishAsync(
+                new AiAuditEvent(
+                    EventType: AiAuditEventTypes.ProviderAttemptInputRecorded,
+                    Action: AiAuditActions.InputRecorded,
+                    EntityType: AiAuditEntityTypes.ExecutionAttempt,
+                    EntityId: attempt.Id,
+                    ActorUserId: input.RequestedBy,
+                    Payload: new
+                    {
+                        Stage = "provider-input",
+                        ExecutionId = execution.Id,
+                        AttemptId = attempt.Id,
+                        attempt.AttemptNumber,
+                        ProviderType = candidate.value.Connection.ProviderType.ToString(),
+                        ConnectionId = candidate.value.Connection.Id,
+                        ConnectionName = candidate.value.Connection.Name,
+                        candidate.value.Connection.BaseUrl,
+                        ModelId = candidate.value.Model.Id,
+                        ModelName = candidate.value.Model.Name,
+                        candidate.value.Model.ExternalModelId,
+                        Request = providerRequest,
+                        execution.CorrelationId,
+                        execution.RequestHash,
+                    },
+                    Metadata: new
+                    {
+                        Stage = "provider-input",
+                        Type = "embeddings",
+                    }
+                ),
+                cancellationToken
+            );
+
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+
             try
             {
                 var context = await BuildProviderContextAsync(candidate.value, cancellationToken);
@@ -293,7 +526,7 @@ public sealed class AiExecutionOrchestrator(
                 );
 
                 var response = await provider.ExecuteAsync(
-                    new AiProviderEmbeddingRequest(input.Inputs),
+                    providerRequest,
                     context,
                     cancellationToken
                 );
@@ -313,6 +546,52 @@ public sealed class AiExecutionOrchestrator(
 
                 await audit.PublishAsync(
                     new AiAuditEvent(
+                        EventType: AiAuditEventTypes.ProviderAttemptOutputRecorded,
+                        Action: AiAuditActions.OutputRecorded,
+                        EntityType: AiAuditEntityTypes.ExecutionAttempt,
+                        EntityId: attempt.Id,
+                        ActorUserId: input.RequestedBy,
+                        After: new
+                        {
+                            Status = "Completed",
+                            response.Embeddings,
+                            response.Dimensions,
+                            response.InputTokens,
+                            response.RawResponseJson,
+                            EstimatedCost = cost,
+                            DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                        },
+                        Payload: new
+                        {
+                            Stage = "provider-output",
+                            ExecutionId = execution.Id,
+                            AttemptId = attempt.Id,
+                            attempt.AttemptNumber,
+                            ProviderType = candidate.value.Connection.ProviderType.ToString(),
+                            ConnectionId = candidate.value.Connection.Id,
+                            ConnectionName = candidate.value.Connection.Name,
+                            ModelId = candidate.value.Model.Id,
+                            ModelName = candidate.value.Model.Name,
+                            candidate.value.Model.ExternalModelId,
+                            Request = providerRequest,
+                            Response = response,
+                            EstimatedCost = cost,
+                            DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                            execution.CorrelationId,
+                            execution.RequestHash,
+                        },
+                        Metadata: new
+                        {
+                            Stage = "provider-output",
+                            Type = "embeddings",
+                            Status = "Completed",
+                        }
+                    ),
+                    cancellationToken
+                );
+
+                await audit.PublishAsync(
+                    new AiAuditEvent(
                         EventType: AiAuditEventTypes.ExecutionCompleted,
                         Action: AiAuditActions.Completed,
                         EntityType: AiAuditEntityTypes.Execution,
@@ -320,6 +599,54 @@ public sealed class AiExecutionOrchestrator(
                         ActorUserId: input.RequestedBy,
                         After: AiAuditSnapshots.From(execution),
                         Payload: AiAuditSnapshots.From(execution)
+                    ),
+                    cancellationToken
+                );
+
+                await audit.PublishAsync(
+                    new AiAuditEvent(
+                        EventType: AiAuditEventTypes.ExecutionOutputRecorded,
+                        Action: AiAuditActions.OutputRecorded,
+                        EntityType: AiAuditEntityTypes.Execution,
+                        EntityId: execution.Id,
+                        ActorUserId: input.RequestedBy,
+                        After: new
+                        {
+                            Status = execution.Status.ToString(),
+                            response.Embeddings,
+                            response.Dimensions,
+                            response.InputTokens,
+                            response.RawResponseJson,
+                            EstimatedCost = cost,
+                            execution.DurationMilliseconds,
+                        },
+                        Payload: new
+                        {
+                            Stage = "service-output",
+                            ExecutionId = execution.Id,
+                            ExecutionType = execution.ExecutionType.ToString(),
+                            ServiceInput = input,
+                            ServiceOutput = response,
+                            Provider = new
+                            {
+                                ProviderType = candidate.value.Connection.ProviderType.ToString(),
+                                ConnectionId = candidate.value.Connection.Id,
+                                ConnectionName = candidate.value.Connection.Name,
+                                candidate.value.Connection.BaseUrl,
+                                ModelId = candidate.value.Model.Id,
+                                ModelName = candidate.value.Model.Name,
+                                candidate.value.Model.ExternalModelId,
+                            },
+                            Execution = AiAuditSnapshots.From(execution),
+                            execution.CorrelationId,
+                            execution.RequestHash,
+                        },
+                        Metadata: new
+                        {
+                            Stage = "service-output",
+                            ExecutionType = execution.ExecutionType.ToString(),
+                            Status = execution.Status.ToString(),
+                        }
                     ),
                     cancellationToken
                 );
@@ -362,7 +689,7 @@ public sealed class AiExecutionOrchestrator(
                     )
                 );
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
             {
                 lastError = AiApplicationErrors.ProviderTimeout;
 
@@ -371,6 +698,56 @@ public sealed class AiExecutionOrchestrator(
                     lastError.Code,
                     lastError.Message,
                     CalculateDuration(attempt.StartedAtUtc)
+                );
+
+                await audit.PublishAsync(
+                    new AiAuditEvent(
+                        EventType: AiAuditEventTypes.ProviderAttemptFailed,
+                        Action: AiAuditActions.OutputRecorded,
+                        EntityType: AiAuditEntityTypes.ExecutionAttempt,
+                        EntityId: attempt.Id,
+                        ActorUserId: input.RequestedBy,
+                        After: new
+                        {
+                            Status = "Failed",
+                            ErrorCode = lastError.Code,
+                            ErrorMessage = lastError.Message,
+                            DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                        },
+                        Payload: new
+                        {
+                            Stage = "provider-output",
+                            ExecutionId = execution.Id,
+                            AttemptId = attempt.Id,
+                            attempt.AttemptNumber,
+                            ProviderType = candidate.value.Connection.ProviderType.ToString(),
+                            ConnectionId = candidate.value.Connection.Id,
+                            ConnectionName = candidate.value.Connection.Name,
+                            ModelId = candidate.value.Model.Id,
+                            ModelName = candidate.value.Model.Name,
+                            candidate.value.Model.ExternalModelId,
+                            Request = providerRequest,
+                            Error = new
+                            {
+                                Code = lastError.Code,
+                                Message = lastError.Message,
+                                ExceptionType = exception.GetType().FullName,
+                                exception.StackTrace,
+                            },
+                            DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                            execution.CorrelationId,
+                            execution.RequestHash,
+                        },
+                        Metadata: new
+                        {
+                            Stage = "provider-output",
+                            Type = "embeddings",
+                            Status = "Failed",
+                        },
+                        ErrorMessage: lastError.Message,
+                        StackTrace: exception.ToString()
+                    ),
+                    cancellationToken
                 );
 
                 await RegisterFallbackIfNeededAsync(
@@ -391,6 +768,56 @@ public sealed class AiExecutionOrchestrator(
                     "AI.ProviderExecutionFailed",
                     exception.Message,
                     CalculateDuration(attempt.StartedAtUtc)
+                );
+
+                await audit.PublishAsync(
+                    new AiAuditEvent(
+                        EventType: AiAuditEventTypes.ProviderAttemptFailed,
+                        Action: AiAuditActions.OutputRecorded,
+                        EntityType: AiAuditEntityTypes.ExecutionAttempt,
+                        EntityId: attempt.Id,
+                        ActorUserId: input.RequestedBy,
+                        After: new
+                        {
+                            Status = "Failed",
+                            ErrorCode = "AI.ProviderExecutionFailed",
+                            ErrorMessage = exception.Message,
+                            DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                        },
+                        Payload: new
+                        {
+                            Stage = "provider-output",
+                            ExecutionId = execution.Id,
+                            AttemptId = attempt.Id,
+                            attempt.AttemptNumber,
+                            ProviderType = candidate.value.Connection.ProviderType.ToString(),
+                            ConnectionId = candidate.value.Connection.Id,
+                            ConnectionName = candidate.value.Connection.Name,
+                            ModelId = candidate.value.Model.Id,
+                            ModelName = candidate.value.Model.Name,
+                            candidate.value.Model.ExternalModelId,
+                            Request = providerRequest,
+                            Error = new
+                            {
+                                Code = "AI.ProviderExecutionFailed",
+                                Message = exception.Message,
+                                ExceptionType = exception.GetType().FullName,
+                                exception.StackTrace,
+                            },
+                            DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                            execution.CorrelationId,
+                            execution.RequestHash,
+                        },
+                        Metadata: new
+                        {
+                            Stage = "provider-output",
+                            Type = "embeddings",
+                            Status = "Failed",
+                        },
+                        ErrorMessage: exception.Message,
+                        StackTrace: exception.ToString()
+                    ),
+                    cancellationToken
                 );
 
                 await RegisterFallbackIfNeededAsync(
@@ -469,6 +896,7 @@ public sealed class AiExecutionOrchestrator(
         string? requestedByName,
         IReadOnlyCollection<AiExecutionMessageInput> messages,
         IReadOnlyCollection<AiExecutionVariableInput>? variables,
+        object serviceInput,
         CancellationToken cancellationToken
     )
     {
@@ -560,6 +988,52 @@ public sealed class AiExecutionOrchestrator(
             cancellationToken
         );
 
+        await audit.PublishAsync(
+            new AiAuditEvent(
+                EventType: AiAuditEventTypes.ExecutionInputRecorded,
+                Action: AiAuditActions.InputRecorded,
+                EntityType: AiAuditEntityTypes.Execution,
+                EntityId: execution.Id,
+                ActorUserId: requestedBy,
+                ActorUserName: requestedByName,
+                Payload: new
+                {
+                    Stage = "service-input",
+                    ExecutionId = execution.Id,
+                    ExecutionType = execution.ExecutionType.ToString(),
+                    ServiceInput = serviceInput,
+                    CompiledProviderInput = new
+                    {
+                        Messages = compiled.Value.Messages,
+                        profile.Temperature,
+                        profile.MaximumOutputTokens,
+                        profile.TimeoutSeconds,
+                        ResponseFormat = profile.ResponseFormat.ToString(),
+                        profile.JsonSchema,
+                    },
+                    Candidates = candidates.Value.Select(item => new
+                    {
+                        ConnectionId = item.Connection.Id,
+                        ConnectionName = item.Connection.Name,
+                        ProviderType = item.Connection.ProviderType.ToString(),
+                        item.Connection.BaseUrl,
+                        ModelId = item.Model.Id,
+                        ModelName = item.Model.Name,
+                        item.Model.ExternalModelId,
+                    }),
+                    execution.CorrelationId,
+                    execution.RequestHash,
+                },
+                Metadata: new
+                {
+                    Stage = "service-input",
+                    ExecutionType = execution.ExecutionType.ToString(),
+                    CandidateCount = candidates.Value.Count,
+                }
+            ),
+            cancellationToken
+        );
+
         if (executionType == AiExecutionType.Chat)
         {
             await audit.PublishAsync(
@@ -620,6 +1094,51 @@ public sealed class AiExecutionOrchestrator(
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
+        var providerRequest = new AiProviderChatRequest(
+            executionContext.CompiledPrompt.Messages,
+            executionContext.Profile.Temperature,
+            executionContext.Profile.MaximumOutputTokens,
+            structured,
+            jsonSchema
+        );
+
+        await audit.PublishAsync(
+            new AiAuditEvent(
+                EventType: AiAuditEventTypes.ProviderAttemptInputRecorded,
+                Action: AiAuditActions.InputRecorded,
+                EntityType: AiAuditEntityTypes.ExecutionAttempt,
+                EntityId: attempt.Id,
+                ActorUserId: executionContext.RequestedBy,
+                ActorUserName: executionContext.RequestedByName,
+                Payload: new
+                {
+                    Stage = "provider-input",
+                    ExecutionId = executionContext.Execution.Id,
+                    AttemptId = attempt.Id,
+                    attempt.AttemptNumber,
+                    ProviderType = candidate.Connection.ProviderType.ToString(),
+                    ConnectionId = candidate.Connection.Id,
+                    ConnectionName = candidate.Connection.Name,
+                    candidate.Connection.BaseUrl,
+                    ModelId = candidate.Model.Id,
+                    ModelName = candidate.Model.Name,
+                    candidate.Model.ExternalModelId,
+                    Request = providerRequest,
+                    executionContext.Execution.CorrelationId,
+                    executionContext.Execution.RequestHash,
+                },
+                Metadata: new
+                {
+                    Stage = "provider-input",
+                    Structured = structured,
+                    HasImages = providerRequest.Messages.Any(item => item.Images?.Count > 0),
+                }
+            ),
+            cancellationToken
+        );
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
         try
         {
             var providerContext = await BuildProviderContextAsync(
@@ -631,13 +1150,7 @@ public sealed class AiExecutionOrchestrator(
             var provider = providerResolver.ResolveChatProvider(candidate.Connection.ProviderType);
 
             var response = await provider.ExecuteAsync(
-                new AiProviderChatRequest(
-                    executionContext.CompiledPrompt.Messages,
-                    executionContext.Profile.Temperature,
-                    executionContext.Profile.MaximumOutputTokens,
-                    structured,
-                    jsonSchema
-                ),
+                providerRequest,
                 providerContext,
                 providerCancellationToken ?? cancellationToken
             );
@@ -657,6 +1170,54 @@ public sealed class AiExecutionOrchestrator(
                 ParseFinishReason(response.FinishReason)
             );
 
+            await audit.PublishAsync(
+                new AiAuditEvent(
+                    EventType: AiAuditEventTypes.ProviderAttemptOutputRecorded,
+                    Action: AiAuditActions.OutputRecorded,
+                    EntityType: AiAuditEntityTypes.ExecutionAttempt,
+                    EntityId: attempt.Id,
+                    ActorUserId: executionContext.RequestedBy,
+                    ActorUserName: executionContext.RequestedByName,
+                    After: new
+                    {
+                        Status = "Completed",
+                        response.Content,
+                        response.InputTokens,
+                        response.OutputTokens,
+                        response.FinishReason,
+                        response.RawResponseJson,
+                        EstimatedCost = cost,
+                        DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                    },
+                    Payload: new
+                    {
+                        Stage = "provider-output",
+                        ExecutionId = executionContext.Execution.Id,
+                        AttemptId = attempt.Id,
+                        attempt.AttemptNumber,
+                        ProviderType = candidate.Connection.ProviderType.ToString(),
+                        ConnectionId = candidate.Connection.Id,
+                        ConnectionName = candidate.Connection.Name,
+                        ModelId = candidate.Model.Id,
+                        ModelName = candidate.Model.Name,
+                        candidate.Model.ExternalModelId,
+                        Request = providerRequest,
+                        Response = response,
+                        EstimatedCost = cost,
+                        DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                        executionContext.Execution.CorrelationId,
+                        executionContext.Execution.RequestHash,
+                    },
+                    Metadata: new
+                    {
+                        Stage = "provider-output",
+                        Structured = structured,
+                        Status = "Completed",
+                    }
+                ),
+                cancellationToken
+            );
+
             if (!structured)
             {
                 await CompleteExecutionAsync(
@@ -671,13 +1232,64 @@ public sealed class AiExecutionOrchestrator(
 
             return Result.Success(response);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
             executionContext.Execution.FailAttempt(
                 attempt.Id,
                 AiApplicationErrors.ProviderTimeout.Code,
                 AiApplicationErrors.ProviderTimeout.Message,
                 CalculateDuration(attempt.StartedAtUtc)
+            );
+
+            await audit.PublishAsync(
+                new AiAuditEvent(
+                    EventType: AiAuditEventTypes.ProviderAttemptFailed,
+                    Action: AiAuditActions.OutputRecorded,
+                    EntityType: AiAuditEntityTypes.ExecutionAttempt,
+                    EntityId: attempt.Id,
+                    ActorUserId: executionContext.RequestedBy,
+                    ActorUserName: executionContext.RequestedByName,
+                    After: new
+                    {
+                        Status = "Failed",
+                        ErrorCode = AiApplicationErrors.ProviderTimeout.Code,
+                        ErrorMessage = AiApplicationErrors.ProviderTimeout.Message,
+                        DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                    },
+                    Payload: new
+                    {
+                        Stage = "provider-output",
+                        ExecutionId = executionContext.Execution.Id,
+                        AttemptId = attempt.Id,
+                        attempt.AttemptNumber,
+                        ProviderType = candidate.Connection.ProviderType.ToString(),
+                        ConnectionId = candidate.Connection.Id,
+                        ConnectionName = candidate.Connection.Name,
+                        ModelId = candidate.Model.Id,
+                        ModelName = candidate.Model.Name,
+                        candidate.Model.ExternalModelId,
+                        Request = providerRequest,
+                        Error = new
+                        {
+                            Code = AiApplicationErrors.ProviderTimeout.Code,
+                            Message = AiApplicationErrors.ProviderTimeout.Message,
+                            ExceptionType = exception.GetType().FullName,
+                            exception.StackTrace,
+                        },
+                        DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                        executionContext.Execution.CorrelationId,
+                        executionContext.Execution.RequestHash,
+                    },
+                    Metadata: new
+                    {
+                        Stage = "provider-output",
+                        Structured = structured,
+                        Status = "Failed",
+                    },
+                    ErrorMessage: AiApplicationErrors.ProviderTimeout.Message,
+                    StackTrace: exception.ToString()
+                ),
+                cancellationToken
             );
 
             return Result.Failure<AiProviderChatResponse>(
@@ -691,6 +1303,57 @@ public sealed class AiExecutionOrchestrator(
                 "AI.ProviderExecutionFailed",
                 exception.Message,
                 CalculateDuration(attempt.StartedAtUtc)
+            );
+
+            await audit.PublishAsync(
+                new AiAuditEvent(
+                    EventType: AiAuditEventTypes.ProviderAttemptFailed,
+                    Action: AiAuditActions.OutputRecorded,
+                    EntityType: AiAuditEntityTypes.ExecutionAttempt,
+                    EntityId: attempt.Id,
+                    ActorUserId: executionContext.RequestedBy,
+                    ActorUserName: executionContext.RequestedByName,
+                    After: new
+                    {
+                        Status = "Failed",
+                        ErrorCode = "AI.ProviderExecutionFailed",
+                        ErrorMessage = exception.Message,
+                        DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                    },
+                    Payload: new
+                    {
+                        Stage = "provider-output",
+                        ExecutionId = executionContext.Execution.Id,
+                        AttemptId = attempt.Id,
+                        attempt.AttemptNumber,
+                        ProviderType = candidate.Connection.ProviderType.ToString(),
+                        ConnectionId = candidate.Connection.Id,
+                        ConnectionName = candidate.Connection.Name,
+                        ModelId = candidate.Model.Id,
+                        ModelName = candidate.Model.Name,
+                        candidate.Model.ExternalModelId,
+                        Request = providerRequest,
+                        Error = new
+                        {
+                            Code = "AI.ProviderExecutionFailed",
+                            Message = exception.Message,
+                            ExceptionType = exception.GetType().FullName,
+                            exception.StackTrace,
+                        },
+                        DurationMilliseconds = CalculateDuration(attempt.StartedAtUtc),
+                        executionContext.Execution.CorrelationId,
+                        executionContext.Execution.RequestHash,
+                    },
+                    Metadata: new
+                    {
+                        Stage = "provider-output",
+                        Structured = structured,
+                        Status = "Failed",
+                    },
+                    ErrorMessage: exception.Message,
+                    StackTrace: exception.ToString()
+                ),
+                cancellationToken
             );
 
             return Result.Failure<AiProviderChatResponse>(
@@ -715,6 +1378,18 @@ public sealed class AiExecutionOrchestrator(
         execution.Complete(attempt.Id, null, null);
 
         var conversation = request as ExecutionContext;
+        var serviceInput = conversation is null
+            ? request
+            : new
+            {
+                conversation.Execution.ProfileKey,
+                conversation.Messages,
+                conversation.Variables,
+                conversation.Execution.CorrelationId,
+                conversation.Execution.RequestHash,
+                conversation.RequestedBy,
+                conversation.RequestedByName,
+            };
 
         await audit.PublishAsync(
             new AiAuditEvent(
@@ -726,6 +1401,67 @@ public sealed class AiExecutionOrchestrator(
                 ActorUserName: conversation?.RequestedByName,
                 After: AiAuditSnapshots.From(execution),
                 Payload: AiAuditSnapshots.From(execution)
+            ),
+            cancellationToken
+        );
+
+        await audit.PublishAsync(
+            new AiAuditEvent(
+                EventType: AiAuditEventTypes.ExecutionOutputRecorded,
+                Action: AiAuditActions.OutputRecorded,
+                EntityType: AiAuditEntityTypes.Execution,
+                EntityId: execution.Id,
+                ActorUserId: conversation?.RequestedBy,
+                ActorUserName: conversation?.RequestedByName,
+                After: new
+                {
+                    Status = execution.Status.ToString(),
+                    NormalizedOutput = output,
+                    ProviderResponse = response,
+                    ProviderType = candidate.Connection.ProviderType.ToString(),
+                    ConnectionId = candidate.Connection.Id,
+                    ConnectionName = candidate.Connection.Name,
+                    ModelId = candidate.Model.Id,
+                    ModelName = candidate.Model.Name,
+                    candidate.Model.ExternalModelId,
+                    execution.InputTokens,
+                    execution.OutputTokens,
+                    execution.EstimatedCost,
+                    execution.DurationMilliseconds,
+                    FinishReason = execution.FinishReason.ToString(),
+                },
+                Payload: new
+                {
+                    Stage = "service-output",
+                    ExecutionId = execution.Id,
+                    ExecutionType = execution.ExecutionType.ToString(),
+                    ServiceInput = serviceInput,
+                    ServiceOutput = new
+                    {
+                        NormalizedOutput = output,
+                        ProviderResponse = response,
+                        response.RawResponseJson,
+                    },
+                    Provider = new
+                    {
+                        ProviderType = candidate.Connection.ProviderType.ToString(),
+                        ConnectionId = candidate.Connection.Id,
+                        ConnectionName = candidate.Connection.Name,
+                        candidate.Connection.BaseUrl,
+                        ModelId = candidate.Model.Id,
+                        ModelName = candidate.Model.Name,
+                        candidate.Model.ExternalModelId,
+                    },
+                    Execution = AiAuditSnapshots.From(execution),
+                    execution.CorrelationId,
+                    execution.RequestHash,
+                },
+                Metadata: new
+                {
+                    Stage = "service-output",
+                    ExecutionType = execution.ExecutionType.ToString(),
+                    Status = execution.Status.ToString(),
+                }
             ),
             cancellationToken
         );
@@ -768,15 +1504,7 @@ public sealed class AiExecutionOrchestrator(
             );
         }
 
-        var snapshotRequest = conversation is null
-            ? request
-            : new
-            {
-                conversation.Execution.ProfileKey,
-                Messages = conversation.Messages,
-                Variables = conversation.Variables,
-                conversation.Execution.CorrelationId,
-            };
+        var snapshotRequest = serviceInput;
 
         await snapshotWriter.WriteAsync(
             execution.Id,
@@ -874,6 +1602,21 @@ public sealed class AiExecutionOrchestrator(
     {
         execution.Fail(errorCode, errorMessage, null);
 
+        var actorUserId = request switch
+        {
+            ExecuteAiChatInput chat => chat.RequestedBy,
+            ExecuteAiStructuredInput structured => structured.RequestedBy,
+            ExecuteAiEmbeddingsInput embeddings => embeddings.RequestedBy,
+            ExecutionContext context => context.RequestedBy,
+            _ => null,
+        };
+        var actorUserName = request switch
+        {
+            ExecuteAiChatInput chat => chat.RequestedByName,
+            ExecutionContext context => context.RequestedByName,
+            _ => null,
+        };
+
         await audit.PublishAsync(
             new AiAuditEvent(
                 EventType: AiAuditEventTypes.ExecutionFailed,
@@ -882,6 +1625,49 @@ public sealed class AiExecutionOrchestrator(
                 EntityId: execution.Id,
                 After: AiAuditSnapshots.From(execution),
                 Payload: AiAuditSnapshots.From(execution),
+                ErrorMessage: errorMessage
+            ),
+            cancellationToken
+        );
+
+        await audit.PublishAsync(
+            new AiAuditEvent(
+                EventType: AiAuditEventTypes.ExecutionOutputRecorded,
+                Action: AiAuditActions.OutputRecorded,
+                EntityType: AiAuditEntityTypes.Execution,
+                EntityId: execution.Id,
+                ActorUserId: actorUserId,
+                ActorUserName: actorUserName,
+                After: new
+                {
+                    Status = execution.Status.ToString(),
+                    errorCode,
+                    errorMessage,
+                    execution.DurationMilliseconds,
+                    FinishReason = execution.FinishReason.ToString(),
+                },
+                Payload: new
+                {
+                    Stage = "service-output",
+                    ExecutionId = execution.Id,
+                    ExecutionType = execution.ExecutionType.ToString(),
+                    ServiceInput = request,
+                    ServiceOutput = new
+                    {
+                        Success = false,
+                        ErrorCode = errorCode,
+                        ErrorMessage = errorMessage,
+                    },
+                    Execution = AiAuditSnapshots.From(execution),
+                    execution.CorrelationId,
+                    execution.RequestHash,
+                },
+                Metadata: new
+                {
+                    Stage = "service-output",
+                    ExecutionType = execution.ExecutionType.ToString(),
+                    Status = execution.Status.ToString(),
+                },
                 ErrorMessage: errorMessage
             ),
             cancellationToken
@@ -940,7 +1726,7 @@ public sealed class AiExecutionOrchestrator(
     private async Task<AiProviderContext> BuildProviderContextAsync(
         AiModelCandidate candidate,
         CancellationToken cancellationToken,
-        int? minimumTimeoutSeconds = null
+        int? maximumTimeoutSeconds = null
     )
     {
         var secret = await secretResolver.ResolveAsync(
@@ -948,10 +1734,11 @@ public sealed class AiExecutionOrchestrator(
             cancellationToken
         );
 
-        // The profile owns the execution budget. A connection created with the old
-        // 120-second default must not cancel a slower local model before that budget.
-        var effectiveTimeoutSeconds = minimumTimeoutSeconds.HasValue
-            ? Math.Max(candidate.Connection.TimeoutSeconds, minimumTimeoutSeconds.Value)
+        // Connection timeouts remain useful for health/discovery operations. Long-running
+        // inference is governed by the profile budget and its linked cancellation token,
+        // so a short connection timeout must not cancel chat or extraction prematurely.
+        var effectiveTimeoutSeconds = maximumTimeoutSeconds.HasValue
+            ? maximumTimeoutSeconds.Value
             : candidate.Connection.TimeoutSeconds;
 
         return new AiProviderContext(
@@ -966,6 +1753,66 @@ public sealed class AiExecutionOrchestrator(
             candidate.Model.ExternalModelId,
             candidate.Model.Capabilities
         );
+    }
+
+    private async Task AuditRejectedRequestAsync(
+        object serviceInput,
+        string profileKey,
+        AiExecutionType executionType,
+        string? correlationId,
+        Guid? requestedBy,
+        string? requestedByName,
+        Error error,
+        CancellationToken cancellationToken
+    )
+    {
+        await audit.PublishAsync(
+            new AiAuditEvent(
+                EventType: AiAuditEventTypes.ExecutionRejected,
+                Action: AiAuditActions.Rejected,
+                EntityType: AiAuditEntityTypes.Execution,
+                ActorUserId: requestedBy,
+                ActorUserName: requestedByName,
+                Payload: new
+                {
+                    Stage = "service-input",
+                    Status = "Rejected",
+                    ExecutionType = executionType.ToString(),
+                    ProfileKey = profileKey,
+                    ServiceInput = serviceInput,
+                    Error = new { error.Code, error.Message },
+                    CorrelationId = correlationId,
+                },
+                Metadata: new
+                {
+                    Stage = "service-input",
+                    Status = "Rejected",
+                    ExecutionType = executionType.ToString(),
+                },
+                ErrorMessage: error.Message,
+                CorrelationId: correlationId
+            ),
+            cancellationToken
+        );
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    private static CancellationTokenSource CreateProviderAttemptTimeout(
+        CancellationToken profileCancellationToken,
+        int profileTimeoutSeconds,
+        int candidateCount
+    )
+    {
+        var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+            profileCancellationToken
+        );
+        var fairShareSeconds = (int)Math.Ceiling(
+            profileTimeoutSeconds / (double)Math.Max(1, candidateCount)
+        );
+        var attemptSeconds = Math.Clamp(fairShareSeconds, 120, 300);
+        timeout.CancelAfter(TimeSpan.FromSeconds(attemptSeconds));
+        return timeout;
     }
 
     private static AiChatResultDto CreateChatResult(

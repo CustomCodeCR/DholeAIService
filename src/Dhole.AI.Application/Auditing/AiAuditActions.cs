@@ -16,4 +16,7 @@ public static class AiAuditActions
     public const string Cancelled = "cancelled";
     public const string FallbackUsed = "fallback-used";
     public const string Chat = "chat";
+    public const string InputRecorded = "input-recorded";
+    public const string OutputRecorded = "output-recorded";
+    public const string Rejected = "rejected";
 }

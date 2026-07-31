@@ -9,4 +9,5 @@ public static class AiAuditEntityTypes
     public const string Execution = "AiExecution";
     public const string ExecutionAttempt = "AiExecutionAttempt";
     public const string Chat = "AiChat";
+    public const string EmailAnalysisJob = "AiEmailAnalysisJob";
 }

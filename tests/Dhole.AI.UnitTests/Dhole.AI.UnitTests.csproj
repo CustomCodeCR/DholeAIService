@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dhole.AI.Application\Dhole.AI.Application.csproj" />
     <ProjectReference Include="..\..\src\Dhole.AI.Domain\Dhole.AI.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Dhole.AI.Workers\Dhole.AI.Workers.csproj" />
   </ItemGroup>
 
 </Project>

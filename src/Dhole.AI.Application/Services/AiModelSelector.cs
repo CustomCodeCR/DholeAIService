@@ -6,10 +6,15 @@ using Dhole.AI.Domain.Models.Entities;
 using Dhole.AI.Domain.Models.Enums;
 using Dhole.AI.Domain.Profiles.Entities;
 using Dhole.AI.Domain.Profiles.Enums;
+using Microsoft.Extensions.Configuration;
 
 namespace Dhole.AI.Application.Services;
 
-public sealed class AiModelSelector(IAiModelRepository models, IAiConnectionRepository connections)
+public sealed class AiModelSelector(
+    IAiModelRepository models,
+    IAiConnectionRepository connections,
+    IConfiguration configuration
+)
     : IAiModelSelector
 {
     public async Task<Result<IReadOnlyCollection<AiModelCandidate>>> SelectAsync(
@@ -39,22 +44,23 @@ public sealed class AiModelSelector(IAiModelRepository models, IAiConnectionRepo
         var modelMap = registeredModels.ToDictionary(item => item.Id);
 
         var candidates = configurations
-            .Where(configuration =>
-                modelMap.TryGetValue(configuration.ModelId, out var model)
+            .Where(profileModel =>
+                modelMap.TryGetValue(profileModel.ModelId, out var model)
                 && !model.IsDeleted
                 && model.IsActive
+                && model.Status != AiModelStatus.Unavailable
                 && model.Supports(requiredCapability)
                 && connectionMap.ContainsKey(model.ConnectionId)
             )
-            .Select(configuration =>
+            .Select(profileModel =>
             {
-                var model = modelMap[configuration.ModelId];
+                var model = modelMap[profileModel.ModelId];
 
                 return new AiModelCandidate(
                     model,
                     connectionMap[model.ConnectionId],
-                    configuration.Priority,
-                    configuration.IsFallback
+                    profileModel.Priority,
+                    profileModel.IsFallback
                 );
             })
             .ToArray();
@@ -85,11 +91,33 @@ public sealed class AiModelSelector(IAiModelRepository models, IAiConnectionRepo
             _ => candidates.OrderBy(item => item.Priority),
         };
 
-        return Result.Success<IReadOnlyCollection<AiModelCandidate>>(ordered.ToArray());
+        var profileMaximumCandidates = configuration[
+            $"AI:Execution:Profiles:{profile.Key}:MaximumCandidates"
+        ];
+        var maximumCandidates = Math.Clamp(
+            ReadPositiveInt(
+                profileMaximumCandidates,
+                ReadPositiveInt(
+                    configuration["AI:Execution:MaximumCandidatesPerExecution"],
+                    2
+                )
+            ),
+            1,
+            10
+        );
+
+        return Result.Success<IReadOnlyCollection<AiModelCandidate>>(
+            ordered.Take(maximumCandidates).ToArray()
+        );
     }
 
     private static decimal CalculateCostScore(AiModel model)
     {
         return (model.InputCostPerMillionTokens ?? 0m) + (model.OutputCostPerMillionTokens ?? 0m);
+    }
+
+    private static int ReadPositiveInt(string? value, int fallback)
+    {
+        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
     }
 }

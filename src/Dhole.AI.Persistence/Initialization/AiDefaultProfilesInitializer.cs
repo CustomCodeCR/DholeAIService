@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Dhole.AI.Domain.Models.Entities;
 using Dhole.AI.Domain.Models.Enums;
 using Dhole.AI.Domain.Profiles.Entities;
@@ -38,7 +40,7 @@ public sealed class AiDefaultProfilesInitializer(
             "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
             "rows": {
               "type": "array",
-              "maxItems": 200,
+              "maxItems": 100,
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -108,17 +110,20 @@ public sealed class AiDefaultProfilesInitializer(
             TemplateName: "Asistente general de Dhole",
             TemplateDescription: "Instrucciones base para el asistente conversacional del ecosistema Dhole.",
             SystemPrompt: """
-                Eres el asistente de inteligencia artificial del ecosistema Dhole. Ayuda con logística, comercio exterior, aduanas, pricing, operaciones y soporte funcional del sistema. Responde en español, salvo que el usuario solicite otro idioma. Sé directo, preciso y orientado a acciones. No inventes datos, tarifas, regulaciones, estados de procesos ni resultados del sistema. Cuando falte información, indica claramente qué dato falta. Distingue hechos, supuestos y recomendaciones. No reveles secretos, credenciales, tokens ni información sensible. Para decisiones comerciales o regulatorias, señala los riesgos y recomienda validación humana cuando corresponda.
+                Eres el asistente de Dhole para logística, comercio exterior, aduanas, pricing, operaciones y soporte del sistema.
+                Responde en español salvo petición contraria. Sé breve, preciso y accionable.
+                No inventes datos, tarifas, regulaciones ni estados del sistema. Indica los datos faltantes y separa hechos, supuestos y recomendaciones.
+                No reveles secretos ni información sensible. En decisiones comerciales o regulatorias, explica el riesgo y recomienda validación humana.
                 """,
             RoutingMode: AiRoutingMode.LocalFirst,
             ResponseFormat: AiResponseFormat.Text,
             Temperature: 0.35m,
-            MaximumOutputTokens: 2_048,
-            TimeoutSeconds: 120,
+            MaximumOutputTokens: 1_024,
+            TimeoutSeconds: 900,
             JsonSchema: null,
             RequiredCapability: AiModelCapability.Chat,
             ModelPreference: DefaultModelPreference.LocalFirst,
-            EnforceConfiguration: false
+            EnforceConfiguration: true
         ),
         new(
             Key: "pricing-email-analysis",
@@ -159,11 +164,11 @@ public sealed class AiDefaultProfilesInitializer(
             RoutingMode: AiRoutingMode.PriorityFallback,
             ResponseFormat: AiResponseFormat.JsonSchema,
             Temperature: 0.05m,
-            MaximumOutputTokens: 8_192,
-            TimeoutSeconds: 1800,
+            MaximumOutputTokens: 768,
+            TimeoutSeconds: 120,
             JsonSchema: PricingEmailJsonSchema,
             RequiredCapability: AiModelCapability.StructuredOutput,
-            ModelPreference: DefaultModelPreference.AnalysisQuality,
+            ModelPreference: DefaultModelPreference.FastStructured,
             EnforceConfiguration: true
         ),
         new(
@@ -180,11 +185,11 @@ public sealed class AiDefaultProfilesInitializer(
             ResponseFormat: AiResponseFormat.Text,
             Temperature: 0.10m,
             MaximumOutputTokens: 3_500,
-            TimeoutSeconds: 180,
+            TimeoutSeconds: 900,
             JsonSchema: null,
             RequiredCapability: AiModelCapability.Chat,
             ModelPreference: DefaultModelPreference.AnalysisQuality,
-            EnforceConfiguration: false
+            EnforceConfiguration: true
         ),
     ];
 
@@ -198,7 +203,7 @@ public sealed class AiDefaultProfilesInitializer(
         }
 
         var maximumModels = Math.Clamp(
-            ReadPositiveInt(configuration["AI:DefaultProfiles:MaximumModelsPerProfile"], 5),
+            ReadPositiveInt(configuration["AI:DefaultProfiles:MaximumModelsPerProfile"], 3),
             1,
             20
         );
@@ -307,9 +312,6 @@ public sealed class AiDefaultProfilesInitializer(
                 compatibleModelIds.Contains(model.ModelId)
             );
 
-            var hasIncompatibleConfiguredModel = profile.Models.Any(model =>
-                !compatibleModelIds.Contains(model.ModelId)
-            );
             var visionCompatibleModels = definition.Key == "pricing-email-analysis"
                 ? availableModels
                     .Where(model => model.Supports(
@@ -328,7 +330,7 @@ public sealed class AiDefaultProfilesInitializer(
             if (
                 profile.Models.Count == 0
                 || !hasCompatibleConfiguredModel
-                || (definition.EnforceConfiguration && hasIncompatibleConfiguredModel)
+                || definition.EnforceConfiguration
                 || (shouldConfigureVisionFallback && !hasVisionConfiguredModel)
             )
             {
@@ -440,6 +442,15 @@ public sealed class AiDefaultProfilesInitializer(
     {
         IEnumerable<AiModel> ordered = preference switch
         {
+            DefaultModelPreference.FastStructured => models
+                .OrderByDescending(model => model.Status == AiModelStatus.Available)
+                .ThenByDescending(model => model.Supports(AiModelCapability.StructuredOutput))
+                .ThenByDescending(model => model.IsLocal)
+                .ThenBy(GetStructuredExtractionModelRank)
+                .ThenBy(GetStructuredModelGenerationRank)
+                .ThenByDescending(model => model.ContextWindow ?? 0)
+                .ThenBy(model => model.Name),
+
             DefaultModelPreference.LocalFirst => models
                 .OrderByDescending(model => model.Status == AiModelStatus.Available)
                 .ThenByDescending(model => model.IsLocal)
@@ -459,6 +470,56 @@ public sealed class AiDefaultProfilesInitializer(
         return ordered.Take(maximumModels).ToArray();
     }
 
+    private static int GetStructuredModelGenerationRank(AiModel model)
+    {
+        var identity = $"{model.ExternalModelId} {model.Name}".ToLowerInvariant();
+
+        if (
+            identity.Contains("llama3.2", StringComparison.Ordinal)
+            || identity.Contains("llama3.1", StringComparison.Ordinal)
+        )
+        {
+            return 0;
+        }
+
+        if (identity.Contains("mistral", StringComparison.Ordinal))
+        {
+            return 1;
+        }
+
+        return identity.Contains("llama3", StringComparison.Ordinal) ? 2 : 1;
+    }
+
+    private static int GetStructuredExtractionModelRank(AiModel model)
+    {
+        var identity = $"{model.ExternalModelId} {model.Name}";
+        var match = Regex.Match(
+            identity,
+            @"(?<!\d)(?<size>\d+(?:\.\d+)?)\s*b(?![a-z])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+
+        if (
+            !match.Success
+            || !decimal.TryParse(
+                match.Groups["size"].Value,
+                NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out var billions
+            )
+        )
+        {
+            return 1;
+        }
+
+        return billions switch
+        {
+            >= 7m and <= 14m => 0,
+            < 7m => 2,
+            _ => 3,
+        };
+    }
+
     private static bool ReadBoolean(string? value, bool fallback) =>
         bool.TryParse(value, out var parsed) ? parsed : fallback;
 
@@ -469,6 +530,7 @@ public sealed class AiDefaultProfilesInitializer(
     {
         LocalFirst = 1,
         AnalysisQuality = 2,
+        FastStructured = 3,
     }
 
     private sealed record DefaultProfileDefinition(

@@ -13,5 +13,8 @@ public sealed record AiAuditEvent(
     object? Metadata = null,
     string? ErrorMessage = null,
     Guid? EventId = null,
-    DateTime? OccurredAt = null
+    DateTime? OccurredAt = null,
+    string? StackTrace = null,
+    IReadOnlyCollection<object>? Details = null,
+    string? CorrelationId = null
 );

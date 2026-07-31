@@ -3,6 +3,8 @@ using CustomCodeFramework.Messaging.Outbox.DependencyInjection;
 using CustomCodeFramework.Redis.Streams.DependencyInjection;
 using CustomCodeFramework.Workers.DependencyInjection;
 using Dhole.AI.Infrastructure.DependencyInjection;
+using Dhole.AI.Worker.Health;
+using Dhole.AI.Worker.EmailAnalysis;
 using Dhole.AI.Worker.Outbox;
 using Dhole.AI.Worker.Streams;
 using Dhole.AI.Worker.Workers;
@@ -18,12 +20,42 @@ public static class WorkerServiceCollectionExtensions
     {
         services.AddAiWorkerInfrastructure(configuration);
         services.AddCustomCodeRedisStreams(configuration);
+        services
+            .AddHttpClient<
+                IDataExtractionAiEmailRequestClient,
+                DataExtractionAiEmailRequestClient
+            >(client => client.Timeout = Timeout.InfiniteTimeSpan);
+        services.AddHttpClient(
+            DataExtractionInternalEndpointHealthCheck.HttpClientName,
+            client =>
+                client.Timeout = TimeSpan.FromSeconds(
+                    ReadPositiveInt(
+                        configuration[
+                            "Monitoring:AsyncEmail:InternalEndpointTimeoutSeconds"
+                        ],
+                        5
+                    )
+                )
+        );
 
         services.AddAiMessaging(configuration);
         services.AddAiStreamHandlers();
+        services
+            .AddHealthChecks()
+            .AddCheck<AiEmailJobsHealthCheck>("ai-email-jobs")
+            .AddCheck<DataExtractionInternalEndpointHealthCheck>(
+                "data-extraction-internal-endpoint"
+            );
         services.AddAiPeriodicWorkers(configuration);
 
         return services;
+    }
+
+    private static int ReadPositiveInt(string? value, int fallback)
+    {
+        return int.TryParse(value, out var parsed) && parsed > 0
+            ? parsed
+            : fallback;
     }
 
     private static IServiceCollection AddAiMessaging(
@@ -69,6 +101,7 @@ public static class WorkerServiceCollectionExtensions
         services.AddCustomCodeRedisStreamHandler<AiPromptTemplateDeletedStreamHandler>();
         services.AddCustomCodeRedisStreamHandler<AiPromptTemplateActivatedStreamHandler>();
         services.AddCustomCodeRedisStreamHandler<AiPromptTemplateInactivatedStreamHandler>();
+        services.AddCustomCodeRedisStreamHandler<AiPricingEmailAnalysisRequestedStreamHandler>();
 
         return services;
     }
@@ -83,6 +116,7 @@ public static class WorkerServiceCollectionExtensions
         services.AddCustomCodePeriodicWorker<AiCacheWarmupWorker>();
         services.AddCustomCodePeriodicWorker<AiConnectionHealthWorker>();
         services.AddCustomCodePeriodicWorker<AiExecutionCleanupWorker>();
+        services.AddCustomCodePeriodicWorker<AiEmailAnalysisWorker>();
 
         return services;
     }

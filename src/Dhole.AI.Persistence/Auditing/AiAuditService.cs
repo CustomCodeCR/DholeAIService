@@ -22,7 +22,9 @@ public sealed class AiAuditService(ServiceDbContext dbContext) : IAiAuditService
 
         var eventId = auditEvent.EventId ?? Guid.NewGuid();
 
-        var correlationId = current?.CorrelationId ?? Guid.NewGuid();
+        var correlationId = Guid.TryParse(auditEvent.CorrelationId, out var explicitCorrelationId)
+            ? explicitCorrelationId
+            : current?.CorrelationId ?? Guid.NewGuid();
 
         var occurredAt = auditEvent.OccurredAt ?? DateTime.UtcNow;
 
@@ -45,8 +47,8 @@ public sealed class AiAuditService(ServiceDbContext dbContext) : IAiAuditService
             PayloadJson = SerializeNullable(auditEvent.Payload),
             Metadata = SerializeNullable(auditEvent.Metadata),
             auditEvent.ErrorMessage,
-            StackTrace = (string?)null,
-            Details = Array.Empty<object>(),
+            auditEvent.StackTrace,
+            Details = auditEvent.Details ?? Array.Empty<object>(),
         };
 
         dbContext.OutboxMessages.Add(

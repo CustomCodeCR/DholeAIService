@@ -5,6 +5,7 @@ using CustomCodeFramework.Messaging.Outbox;
 using CustomCodeFramework.Postgres.EntityFramework.Configurations;
 using CustomCodeFramework.Postgres.EntityFramework.DbContexts;
 using Dhole.AI.Domain.Connections.Entities;
+using Dhole.AI.Domain.EmailAnalysis.Entities;
 using Dhole.AI.Domain.Executions.Entities;
 using Dhole.AI.Domain.Models.Entities;
 using Dhole.AI.Domain.Profiles.Entities;
@@ -33,6 +34,9 @@ public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
     public DbSet<AiExecution> AiExecutions => Set<AiExecution>();
 
     public DbSet<AiExecutionAttempt> AiExecutionAttempts => Set<AiExecutionAttempt>();
+
+    public DbSet<AiEmailAnalysisJob> AiEmailAnalysisJobs =>
+        Set<AiEmailAnalysisJob>();
 
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 

@@ -38,6 +38,23 @@ public static class AiAuditEventTypes
     public const string ExecutionFailed = "ai.execution.failed";
     public const string ExecutionCancelled = "ai.execution.cancelled";
     public const string ExecutionFallbackUsed = "ai.execution.fallback-used";
+    public const string ExecutionInputRecorded = "ai.execution.input-recorded";
+    public const string ExecutionOutputRecorded = "ai.execution.output-recorded";
+    public const string ExecutionRejected = "ai.execution.rejected";
+
+    public const string ProviderAttemptInputRecorded =
+        "ai.provider-attempt.input-recorded";
+    public const string ProviderAttemptOutputRecorded =
+        "ai.provider-attempt.output-recorded";
+    public const string ProviderAttemptFailed = "ai.provider-attempt.failed";
+    public const string StructuredValidationFailed =
+        "ai.structured.validation-failed";
+
+    public const string EmailAnalysisInputRecorded =
+        "ai.email-analysis.input-recorded";
+    public const string EmailAnalysisOutputRecorded =
+        "ai.email-analysis.output-recorded";
+    public const string EmailAnalysisFailed = "ai.email-analysis.failed";
 
     public const string ChatRequested = "ai.chat.requested";
     public const string ChatCompleted = "ai.chat.completed";

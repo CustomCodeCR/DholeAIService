@@ -87,6 +87,7 @@ internal static class EndpointResults
     {
         var statusCode = error.Code switch
         {
+            "AI.ClientRequestCancelled" => 499,
             "AI.ProviderTimeout" => StatusCodes.Status504GatewayTimeout,
             "AI.ProviderOperationFailed" or "AI.ExecutionFailed" =>
                 StatusCodes.Status502BadGateway,

@@ -6,8 +6,8 @@ namespace Dhole.AI.Infrastructure.Providers.Ollama;
 
 internal static class OllamaRequestMapper
 {
-    private const int LegacyLlamaMaximumOutputTokens = 1_024;
-    private const int LegacyLlamaMaximumContextTokens = 6_144;
+    private const int LegacyLlamaMaximumOutputTokens = 3_072;
+    private const int LegacyLlamaMaximumContextTokens = 8_192;
 
     public static JsonObject CreateChatPayload(
         AiProviderChatRequest request,

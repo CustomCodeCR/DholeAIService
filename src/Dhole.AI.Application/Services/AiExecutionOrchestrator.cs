@@ -15,6 +15,8 @@ using Dhole.AI.Domain.Models.Enums;
 using Dhole.AI.Domain.Profiles.Entities;
 using Dhole.AI.Domain.PromptTemplates.Entities;
 using Dhole.AI.Domain.Shared;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Dhole.AI.Application.Services;
 
@@ -29,7 +31,9 @@ public sealed class AiExecutionOrchestrator(
     IAiStructuredResponseValidator structuredValidator,
     IAiAuditService audit,
     IAiExecutionSnapshotWriter snapshotWriter,
-    IUnitOfWork unitOfWork
+    IUnitOfWork unitOfWork,
+    IConfiguration configuration,
+    ILogger<AiExecutionOrchestrator> logger
 ) : IAiExecutionOrchestrator
 {
     public async Task<Result<AiChatResultDto>> ExecuteChatAsync(
@@ -71,10 +75,11 @@ public sealed class AiExecutionOrchestrator(
         var context = contextResult.Value;
         var lastError = AiApplicationErrors.ExecutionFailed;
 
+        var executionTimeoutSeconds = ResolveExecutionTimeoutSeconds(context.Profile);
         using var profileTimeout = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken
         );
-        profileTimeout.CancelAfter(TimeSpan.FromSeconds(context.Profile.TimeoutSeconds));
+        profileTimeout.CancelAfter(TimeSpan.FromSeconds(executionTimeoutSeconds));
 
         foreach (var candidate in context.Candidates.Select((value, index) => (value, index)))
         {
@@ -86,18 +91,36 @@ public sealed class AiExecutionOrchestrator(
 
             using var attemptTimeout = CreateProviderAttemptTimeout(
                 profileTimeout.Token,
-                context.Profile.TimeoutSeconds,
-                context.Candidates.Count
+                context.Profile,
+                executionTimeoutSeconds,
+                context.Candidates.Count,
+                candidate.value
             );
 
-            var result = await ExecuteChatAttemptAsync(
-                context,
-                candidate.value,
-                false,
-                null,
-                cancellationToken,
-                attemptTimeout.Token
-            );
+            Result<AiProviderChatResponse> result;
+
+            try
+            {
+                result = await ExecuteChatAttemptAsync(
+                    context,
+                    candidate.value,
+                    false,
+                    null,
+                    cancellationToken,
+                    attemptTimeout.Token
+                );
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                await CancelExecutionAfterCallerAbortAsync(
+                    context.Execution,
+                    input.RequestedBy
+                );
+
+                return Result.Failure<AiChatResultDto>(
+                    AiApplicationErrors.ClientRequestCancelled
+                );
+            }
 
             if (result.IsSuccess)
             {
@@ -190,10 +213,11 @@ public sealed class AiExecutionOrchestrator(
          * de su conexión y el cliente gRPC terminaba cancelando a mitad de un fallback.
          * El token externo se conserva para persistencia; este token solo limita proveedor(es).
          */
+        var executionTimeoutSeconds = ResolveExecutionTimeoutSeconds(context.Profile);
         using var profileTimeout = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken
         );
-        profileTimeout.CancelAfter(TimeSpan.FromSeconds(context.Profile.TimeoutSeconds));
+        profileTimeout.CancelAfter(TimeSpan.FromSeconds(executionTimeoutSeconds));
 
         foreach (var candidate in context.Candidates.Select((value, index) => (value, index)))
         {
@@ -205,18 +229,36 @@ public sealed class AiExecutionOrchestrator(
 
             using var attemptTimeout = CreateProviderAttemptTimeout(
                 profileTimeout.Token,
-                context.Profile.TimeoutSeconds,
-                context.Candidates.Count
+                context.Profile,
+                executionTimeoutSeconds,
+                context.Candidates.Count,
+                candidate.value
             );
 
-            var response = await ExecuteChatAttemptAsync(
-                context,
-                candidate.value,
-                true,
-                schema,
-                cancellationToken,
-                attemptTimeout.Token
-            );
+            Result<AiProviderChatResponse> response;
+
+            try
+            {
+                response = await ExecuteChatAttemptAsync(
+                    context,
+                    candidate.value,
+                    true,
+                    schema,
+                    cancellationToken,
+                    attemptTimeout.Token
+                );
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                await CancelExecutionAfterCallerAbortAsync(
+                    context.Execution,
+                    input.RequestedBy
+                );
+
+                return Result.Failure<AiStructuredResultDto>(
+                    AiApplicationErrors.ClientRequestCancelled
+                );
+            }
 
             if (response.IsSuccess)
             {
@@ -1007,7 +1049,8 @@ public sealed class AiExecutionOrchestrator(
                         Messages = compiled.Value.Messages,
                         profile.Temperature,
                         profile.MaximumOutputTokens,
-                        profile.TimeoutSeconds,
+                        ConfiguredTimeoutSeconds = profile.TimeoutSeconds,
+                        EffectiveTimeoutSeconds = ResolveExecutionTimeoutSeconds(profile),
                         ResponseFormat = profile.ResponseFormat.ToString(),
                         profile.JsonSchema,
                     },
@@ -1144,7 +1187,7 @@ public sealed class AiExecutionOrchestrator(
             var providerContext = await BuildProviderContextAsync(
                 candidate,
                 cancellationToken,
-                executionContext.Profile.TimeoutSeconds
+                ResolveExecutionTimeoutSeconds(executionContext.Profile)
             );
 
             var provider = providerResolver.ResolveChatProvider(candidate.Connection.ProviderType);
@@ -1798,21 +1841,97 @@ public sealed class AiExecutionOrchestrator(
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
-    private static CancellationTokenSource CreateProviderAttemptTimeout(
+    private async Task CancelExecutionAfterCallerAbortAsync(
+        AiExecution execution,
+        Guid? cancelledBy
+    )
+    {
+        try
+        {
+            execution.Cancel(
+                "La solicitud HTTP fue cancelada por el cliente antes de finalizar.",
+                cancelledBy
+            );
+
+            using var cleanupTimeout = new CancellationTokenSource(
+                TimeSpan.FromSeconds(10)
+            );
+
+            await unitOfWork.SaveChangesAsync(cleanupTimeout.Token);
+        }
+        catch (InvalidOperationException exception)
+        {
+            logger.LogDebug(
+                exception,
+                "AI execution {ExecutionId} could not be marked as cancelled after the caller disconnected.",
+                execution.Id
+            );
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Failed to persist cancellation for AI execution {ExecutionId} after the caller disconnected.",
+                execution.Id
+            );
+        }
+    }
+
+    private CancellationTokenSource CreateProviderAttemptTimeout(
         CancellationToken profileCancellationToken,
+        AiProfile profile,
         int profileTimeoutSeconds,
-        int candidateCount
+        int candidateCount,
+        AiModelCandidate candidate
     )
     {
         var timeout = CancellationTokenSource.CreateLinkedTokenSource(
             profileCancellationToken
         );
+        var configuredAttemptSeconds = ReadPositiveInt(
+            configuration[
+                $"AI:Execution:Profiles:{profile.Key}:ProviderAttemptTimeoutSeconds"
+            ],
+            0
+        );
         var fairShareSeconds = (int)Math.Ceiling(
             profileTimeoutSeconds / (double)Math.Max(1, candidateCount)
         );
-        var attemptSeconds = Math.Clamp(fairShareSeconds, 120, 300);
+
+        // Un único modelo local debe poder consumir todo el presupuesto del perfil.
+        // El techo anterior de 300 segundos hacía inútil aumentar el timeout del perfil.
+        var defaultAttemptSeconds = candidateCount == 1
+            ? profileTimeoutSeconds
+            : candidate.Model.IsLocal
+                ? Math.Max(fairShareSeconds, Math.Min(profileTimeoutSeconds, 900))
+                : fairShareSeconds;
+        var attemptSeconds = Math.Clamp(
+            configuredAttemptSeconds > 0 ? configuredAttemptSeconds : defaultAttemptSeconds,
+            AiConstants.MinimumTimeoutSeconds,
+            profileTimeoutSeconds
+        );
+
         timeout.CancelAfter(TimeSpan.FromSeconds(attemptSeconds));
         return timeout;
+    }
+
+    private int ResolveExecutionTimeoutSeconds(AiProfile profile)
+    {
+        var configuredTimeoutSeconds = ReadPositiveInt(
+            configuration[$"AI:Execution:Profiles:{profile.Key}:TimeoutSeconds"],
+            profile.TimeoutSeconds
+        );
+
+        return Math.Clamp(
+            configuredTimeoutSeconds,
+            AiConstants.MinimumTimeoutSeconds,
+            AiConstants.MaximumTimeoutSeconds
+        );
+    }
+
+    private static int ReadPositiveInt(string? value, int fallback)
+    {
+        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
     }
 
     private static AiChatResultDto CreateChatResult(

@@ -202,6 +202,53 @@ public sealed class AiEmailAnalysisJob : AuditableAggregateRoot<Guid>
         Touch(DateTime.UtcNow);
     }
 
+    public void RecoverExpiredLease(
+        string errorCode,
+        string errorMessage,
+        DateTime nextAttemptAtUtc
+    )
+    {
+        if (Status != AiEmailAnalysisJobStatus.Processing)
+        {
+            throw new InvalidOperationException(
+                "Solo un trabajo en procesamiento puede recuperarse por lease vencido."
+            );
+        }
+
+        // Perder el lease es un fallo de coordinación del worker, no un intento
+        // real fallido contra el proveedor. Se devuelve el contador para que los
+        // reintentos de AI sigan reservados para timeout/HTTP/salida inválida.
+        AttemptCount = Math.Max(0, AttemptCount - 1);
+        ScheduleRetry(errorCode, errorMessage, nextAttemptAtUtc, AiExecutionId);
+    }
+
+    public void RequeueAfterLeaseFailure(DateTime nextAttemptAtUtc)
+    {
+        if (
+            Status != AiEmailAnalysisJobStatus.Failed
+            || !string.Equals(
+                ErrorCode,
+                "AI.EmailJobLeaseExpired",
+                StringComparison.Ordinal
+            )
+        )
+        {
+            throw new InvalidOperationException(
+                "Solo un trabajo fallido por pérdida de lease puede reactivarse automáticamente."
+            );
+        }
+
+        AttemptCount = Math.Max(0, AttemptCount - 1);
+        Status = AiEmailAnalysisJobStatus.RetryScheduled;
+        NextAttemptAtUtc = nextAttemptAtUtc > DateTime.UtcNow
+            ? nextAttemptAtUtc
+            : DateTime.UtcNow;
+        CompletedAtUtc = null;
+        ResultJson = null;
+        ReleaseLeaseCore();
+        Touch(DateTime.UtcNow);
+    }
+
     public void MarkFailed(
         string errorCode,
         string errorMessage,

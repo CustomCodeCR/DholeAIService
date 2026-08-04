@@ -34,6 +34,11 @@ public static class AiApplicationErrors
         "El proveedor de inteligencia artificial superó el tiempo máximo configurado."
     );
 
+    public static readonly Error ClientRequestCancelled = new(
+        "AI.ClientRequestCancelled",
+        "La solicitud fue cancelada por el cliente antes de que la inteligencia artificial terminara."
+    );
+
     public static readonly Error ModelAlreadyExists = new(
         "AI.ModelAlreadyExists",
         "El modelo ya está registrado para la conexión seleccionada."

@@ -51,11 +51,11 @@ public sealed class AiDefaultProfilesInitializer(
                   },
                   "poe": {
                     "type": ["string", "null"],
-                    "description": "POE. Destination Port, Destination, Port of Discharge, arrival seaport or gateway belong here."
+                    "description": "POE. Destination Port, Port of Discharge, arrival seaport or gateway belong here. A POD header in an ocean-rate table also belongs here when it means Port of Discharge."
                   },
                   "pod": {
                     "type": ["string", "null"],
-                    "description": "POD only when explicitly identified as POD, Place of Delivery or Final Destination. Never copy POE here."
+                    "description": "POD only for Place of Delivery, Delivery Place or Final Destination. Do not place an ocean-rate POD header here when it means Port of Discharge."
                   },
                   "containerType": { "type": ["string", "null"] },
                   "carrier": { "type": ["string", "null"] },
@@ -71,14 +71,14 @@ public sealed class AiDefaultProfilesInitializer(
                   "transitDays": { "type": ["integer", "null"], "minimum": 0 },
                   "validFrom": { "type": ["string", "null"] },
                   "validTo": { "type": ["string", "null"] },
-                  "oceanFreight": { "type": ["number", "null"] },
-                  "originCharges": { "type": ["number", "null"] },
-                  "destinationCharges": { "type": ["number", "null"] },
-                  "surcharges": { "type": ["number", "null"] },
-                  "totalCost": { "type": ["number", "null"] },
-                  "totalSale": { "type": ["number", "null"] },
-                  "profit": { "type": ["number", "null"] },
-                  "margin": { "type": ["number", "null"] },
+                  "oceanFreight": { "type": ["number", "null"], "minimum": -1000000000, "maximum": 1000000000 },
+                  "originCharges": { "type": ["number", "null"], "minimum": -1000000000, "maximum": 1000000000 },
+                  "destinationCharges": { "type": ["number", "null"], "minimum": -1000000000, "maximum": 1000000000 },
+                  "surcharges": { "type": ["number", "null"], "minimum": -1000000000, "maximum": 1000000000 },
+                  "totalCost": { "type": ["number", "null"], "minimum": -1000000000, "maximum": 1000000000 },
+                  "totalSale": { "type": ["number", "null"], "minimum": -1000000000, "maximum": 1000000000 },
+                  "profit": { "type": ["number", "null"], "minimum": -1000000000, "maximum": 1000000000 },
+                  "margin": { "type": ["number", "null"], "minimum": -100000, "maximum": 100000 },
                   "spaceComment": { "type": ["string", "null"] },
                   "remarks": { "type": ["string", "null"] }
                 },
@@ -144,16 +144,25 @@ public sealed class AiDefaultProfilesInitializer(
                 - Repara caracteres dañados por OCR o codificación: MO�N debe interpretarse como MOIN cuando Config contiene Moín; PUERTO CORT�S como Puerto Cortés; MoÃ­n como Moín. Un carácter U+FFFD representa una posición desconocida, no una letra que deba eliminarse.
                 - catalogHints contiene nombres reales de Config. Cuando exista una coincidencia inequívoca, devuelve exactamente el name canónico de Config; nunca uses recuerdos externos ni inventes un catálogo.
                 - En nombres compuestos prioriza el nombre principal: TIANJIN (XINGANG) corresponde a Tianjin; YANTIAN (SHENZHEN) corresponde a Yantian/Shenzhen. No elijas el alias entre paréntesis si el nombre principal existe en Config.
-                - Los sufijos legales S.A., S.A.S., Ltda., LLC, Inc. o equivalentes no cambian la identidad de un agente, pero no aceptes coincidencias parciales que puedan referirse a otra empresa.
+                - Para agent busca primero en el asunto y después en el cuerpo del correo. Solo usa un agente presente en catalogHints y únicamente cuando la coincidencia sea inequívoca. Tolera prefijos RE:/RV:/FWD:, separadores como // y una diferencia ortográfica mínima, por ejemplo CASTRO FALLS puede coincidir con Castro Fallas.
+                - Los sufijos legales S.A., S.A.S., Ltda., LLC, Inc. o equivalentes no cambian la identidad de un agente, pero no aceptes coincidencias parciales que puedan referirse a otra empresa. No deduzcas agent únicamente por la dirección del remitente.
                 - Los grupos de Config son siempre: carriers, pol, pod, poe, currencies, agents, container-types y pricing-imports-profiles.
-                - Cada combinación de ruta y contenedor produce una fila independiente.
+                - Devuelve filas compactas. Cuando varios POL o puertos de descarga comparten exactamente carrier, equipo, mercancía, vigencia, flete y recargos, mantenlos unidos con / en una sola fila; DataExtraction expandirá después el producto cartesiano.
+                - Separa filas cuando cambie carrier, containerType, commodity, oceanFreight u originCharges. Nunca unas varias navieras en la misma fila.
+                - Cuando montos y navieras aparecen en listas paralelas, asócialos por posición. Ejemplo: USD6300/6400 junto a Carrier MSC/ONE significa MSC=6300 y ONE=6400, salvo evidencia explícita contraria.
+                - En correos marítimos, una etiqueta POD junto a una lista de puertos suele significar Port of Discharge y se guarda en poe. Usa pod únicamente para Place of Delivery o Final Destination explícito.
+                - Si el mensaje indica "Below the details of ONE NAC", las restricciones COMM de los grupos A/B/C aplican solo a ONE. La oferta MSC paralela puede conservar una fila general con el universo de rutas compartido, sin copiar la mercancía de ONE y respetando sus exclusiones explícitas.
+                - Un recargo como Tianjin (+ arb USD100) requiere una fila compacta separada para Tianjin con originCharges=100; no se suma silenciosamente al oceanFreight. Agrupa en otra fila los POL sin arbitrario.
+                - Suma únicamente recargos expresados por contenedor en surcharges. Ejemplo: ISPS USD15/cntr + P/S USD50/cntr = 65. Un cargo USD75/BL se conserva en remarks y no se convierte en costo por contenedor.
+                - Para cualquier importe desconocido usa null. Nunca uses números gigantes, infinitos, exponentes extremos ni valores centinela; surcharges debe ser un único número decimal razonable.
+                - Las restricciones de espacio como "except TIANJIN/XIAMEN" se conservan en spaceComment y se aplican únicamente a la oferta o sección correspondiente.
                 - Usa exactamente estos nombres en cada fila: pol, poe, pod, containerType, carrier, agent, commodity, currency, freeDays, transitDays, validFrom, validTo, oceanFreight, originCharges, destinationCharges, surcharges, totalCost, totalSale, profit, margin, spaceComment y remarks. No traduzcas ni cambies los nombres.
                 - pol es el puerto de origen o Port of Loading.
-                - poe es el puerto marítimo de destino/entrada. Cualquier etiqueta Destination, Destination Port, Puerto destino, Port of Discharge, Arrival Port, Gateway o POE se guarda en poe.
-                - pod es otro destino: solo se llena cuando la fuente indica explícitamente POD, Place of Delivery, Delivery Place o Final Destination.
-                - Nunca copies poe en pod ni deduzcas pod a partir de poe. Si no existe un POD explícito, devuelve pod=null.
-                - Normaliza contenedores únicamente cuando sea claro: 20GP, 40GP, 40HC o 45HC.
-                - Usa moneda ISO y fechas YYYY-MM-DD cuando puedan determinarse. Si no hay evidencia de otra divisa, currency debe ser "USD".
+                - poe es el puerto marítimo de destino/entrada. Cualquier etiqueta Destination, Destination Port, Puerto destino, Port of Discharge, Arrival Port, Gateway o POE se guarda en poe. En tablas de flete marítimo, el encabezado POD normalmente significa Port of Discharge y también se guarda en poe.
+                - pod es otro destino: solo se llena cuando la fuente expresa Place of Delivery, Delivery Place o Final Destination, no por el acrónimo POD aislado en una tabla marítima.
+                - Nunca copies poe en pod ni deduzcas pod a partir de poe. Si no existe un lugar final de entrega explícito, devuelve pod=null.
+                - Normaliza contenedores únicamente cuando sea claro: 20GP, 40GP, 40HC o 45HC. Para el patrón contractual narrativo MSC/ONE NAC con una tarifa pareada USDx/y y equipo omitido, containerType es obligatorio y debe ser 40HC; nunca lo devuelvas como null.
+                - Usa moneda ISO y fechas YYYY-MM-DD. Resuelve rangos sin año, como 8-14/Aug, con el año de processingDateUtc salvo evidencia de que la vigencia cruza de diciembre a enero. Si no hay evidencia de otra divisa, currency debe ser "USD".
                 - Todos los montos, días, margen y confianza deben ser números JSON sin símbolos de moneda, porcentajes ni separadores de miles.
                 - oceanFreight es el flete marítimo por contenedor.
                 - Para datos ausentes usa null cuando el esquema permita null; no inventes texto de relleno.
@@ -164,8 +173,8 @@ public sealed class AiDefaultProfilesInitializer(
             RoutingMode: AiRoutingMode.PriorityFallback,
             ResponseFormat: AiResponseFormat.JsonSchema,
             Temperature: 0.05m,
-            MaximumOutputTokens: 768,
-            TimeoutSeconds: 120,
+            MaximumOutputTokens: 6_000,
+            TimeoutSeconds: 1_800,
             JsonSchema: PricingEmailJsonSchema,
             RequiredCapability: AiModelCapability.StructuredOutput,
             ModelPreference: DefaultModelPreference.FastStructured,

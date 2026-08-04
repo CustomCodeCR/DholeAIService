@@ -49,8 +49,10 @@ internal sealed class AiEmailAnalysisWorker(
             return;
         }
 
+        dbContext.ChangeTracker.Clear();
         await ApplyConfiguredAttemptLimitAsync(cancellationToken);
         await RecoverStaleExecutionsAsync(cancellationToken);
+        await RecoverFailedLeaseJobsAsync(cancellationToken);
         await RecoverExpiredLeasesAsync(cancellationToken);
 
         var maxJobs = Math.Min(
@@ -76,14 +78,17 @@ internal sealed class AiEmailAnalysisWorker(
     {
         var configuredMaximum = ReadPositiveInt(
             configuration["AI:EmailJobs:MaxRetryCount"],
-            1
+            3
         );
 
         await dbContext.AiEmailAnalysisJobs
             .Where(job =>
-                job.MaxAttemptCount > configuredMaximum
+                job.MaxAttemptCount != configuredMaximum
                 && job.Status != AiEmailAnalysisJobStatus.Completed
-                && job.Status != AiEmailAnalysisJobStatus.Failed
+                && (
+                    job.Status != AiEmailAnalysisJobStatus.Failed
+                    || job.ErrorCode == "AI.EmailJobLeaseExpired"
+                )
             )
             .ExecuteUpdateAsync(
                 setters => setters.SetProperty(
@@ -399,7 +404,10 @@ internal sealed class AiEmailAnalysisWorker(
                 return;
             }
 
-            var parsed = PricingEmailAiExecutionFactory.Merge(parsedStages);
+            var parsed = PricingEmailAiExecutionFactory.NormalizeForSource(
+                PricingEmailAiExecutionFactory.Merge(parsedStages),
+                payload
+            );
             var primaryResult = successfulOutputs[^1];
             var completedEvent =
                 new AiPricingEmailAnalysisCompletedIntegrationEvent(
@@ -752,9 +760,12 @@ internal sealed class AiEmailAnalysisWorker(
         CancellationToken cancellationToken
     )
     {
-        var staleAfterSeconds = ReadPositiveInt(
-            configuration["AI:Execution:StaleAfterSeconds"],
-            1_200
+        var staleAfterSeconds = Math.Max(
+            4_200,
+            ReadPositiveInt(
+                configuration["AI:Execution:StaleAfterSeconds"],
+                7_200
+            )
         );
         var staleBefore = DateTime.UtcNow.AddSeconds(-staleAfterSeconds);
         var executions = await dbContext.AiExecutions
@@ -847,32 +858,133 @@ internal sealed class AiEmailAnalysisWorker(
         dbContext.ChangeTracker.Clear();
     }
 
+    private async Task RecoverFailedLeaseJobsAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        var now = DateTime.UtcNow;
+        var maximumJobAgeHours = ReadPositiveInt(
+            configuration["AI:EmailJobs:MaximumJobAgeHours"],
+            24
+        );
+        var maximumAgeCutoff = now.AddHours(-maximumJobAgeHours);
+        var jobs = await dbContext.AiEmailAnalysisJobs
+            .Where(item =>
+                item.Status == AiEmailAnalysisJobStatus.Failed
+                && item.ErrorCode == "AI.EmailJobLeaseExpired"
+                && item.CreatedAtUtc >= maximumAgeCutoff
+            )
+            .OrderBy(item => item.CompletedAtUtc)
+            .Take(100)
+            .ToListAsync(cancellationToken);
+
+        foreach (var job in jobs)
+        {
+            job.RequeueAfterLeaseFailure(now);
+            await audit.PublishAsync(
+                new AiAuditEvent(
+                    EventType: AiAuditEventTypes.EmailAnalysisInputRecorded,
+                    Action: AiAuditActions.InputRecorded,
+                    EntityType: AiAuditEntityTypes.EmailAnalysisJob,
+                    EntityId: job.Id,
+                    After: new
+                    {
+                        Status = job.Status.ToString(),
+                        job.NextAttemptAtUtc,
+                        job.AttemptCount,
+                        job.MaxAttemptCount,
+                    },
+                    Payload: new
+                    {
+                        Stage = "email-lease-failure-reactivated",
+                        Job = CreateJobAuditSnapshot(job),
+                    },
+                    Metadata: new
+                    {
+                        Stage = "email-lease-failure-reactivated",
+                        Status = "RetryScheduled",
+                    },
+                    CorrelationId: job.CorrelationId
+                ),
+                cancellationToken
+            );
+        }
+
+        if (jobs.Count == 0)
+        {
+            return;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogWarning(
+            "Se reactivaron {JobCount} AI jobs que habían fallado únicamente por pérdida de lease.",
+            jobs.Count
+        );
+        dbContext.ChangeTracker.Clear();
+    }
+
     private async Task RecoverExpiredLeasesAsync(
         CancellationToken cancellationToken
     )
     {
         var now = DateTime.UtcNow;
+        var heartbeatGraceSeconds = ReadPositiveInt(
+            configuration["AI:EmailJobs:LeaseRecoveryGraceSeconds"],
+            120
+        );
+        var maximumJobAgeHours = ReadPositiveInt(
+            configuration["AI:EmailJobs:MaximumJobAgeHours"],
+            24
+        );
+        var staleHeartbeatBefore = now.AddSeconds(-heartbeatGraceSeconds);
+        var maximumAgeCutoff = now.AddHours(-maximumJobAgeHours);
         var jobs = await dbContext.AiEmailAnalysisJobs
             .Where(item =>
                 item.Status == AiEmailAnalysisJobStatus.Processing
                 && item.LeaseExpiresAtUtc.HasValue
                 && item.LeaseExpiresAtUtc.Value < now
+                && (
+                    !item.LastHeartbeatAtUtc.HasValue
+                    || item.LastHeartbeatAtUtc.Value < staleHeartbeatBefore
+                )
             )
             .OrderBy(item => item.LeaseExpiresAtUtc)
             .Take(100)
             .ToListAsync(cancellationToken);
+
         foreach (var job in jobs)
         {
-            if (job.AttemptCount < job.MaxAttemptCount)
+            if (job.CreatedAtUtc < maximumAgeCutoff)
             {
-                const string retryErrorCode = "AI.EmailJobLeaseExpired";
-                const string retryErrorMessage =
-                    "El worker AI perdió el lease y el trabajo fue recuperado.";
-                job.ScheduleRetry(
-                    retryErrorCode,
-                    retryErrorMessage,
-                    now,
+                const string terminalErrorCode = "AI.EmailJobLeaseRecoveryExpired";
+                var terminalErrorMessage =
+                    $"El trabajo AI superó {maximumJobAgeHours} horas sin completar después de perder el lease.";
+                var failedEvent =
+                    new AiPricingEmailAnalysisFailedIntegrationEvent(
+                        Guid.NewGuid(),
+                        job.ExternalRequestId,
+                        job.EmailExtractionJobId,
+                        job.Id,
+                        job.AiExecutionId,
+                        job.CorrelationId,
+                        job.RequestHash,
+                        terminalErrorCode,
+                        terminalErrorMessage,
+                        true,
+                        job.AttemptCount,
+                        now
+                    );
+                job.MarkFailed(
+                    terminalErrorCode,
+                    terminalErrorMessage,
                     job.AiExecutionId
+                );
+                await outbox.WriteAsync(
+                    typeof(AiPricingEmailAnalysisFailedIntegrationEvent).FullName!,
+                    EmailAnalysisMessageTypes.Failed,
+                    failedEvent,
+                    job.CorrelationId,
+                    cancellationToken
                 );
                 await audit.PublishAsync(
                     new AiAuditEvent(
@@ -883,27 +995,23 @@ internal sealed class AiEmailAnalysisWorker(
                         After: new
                         {
                             Status = job.Status.ToString(),
-                            job.NextAttemptAtUtc,
+                            job.AiExecutionId,
                             job.ErrorCode,
                             job.ErrorMessage,
+                            job.CompletedAtUtc,
                         },
                         Payload: new
                         {
-                            Stage = "email-lease-recovered",
+                            Stage = "email-lease-recovery-expired",
                             Job = CreateJobAuditSnapshot(job),
-                            Error = new
-                            {
-                                Code = retryErrorCode,
-                                Message = retryErrorMessage,
-                                IsTransient = true,
-                            },
+                            PublishedIntegrationEvent = failedEvent,
                         },
                         Metadata: new
                         {
-                            Stage = "email-lease-recovered",
-                            Status = "RetryScheduled",
+                            Stage = "email-lease-recovery-expired",
+                            Status = "Failed",
                         },
-                        ErrorMessage: retryErrorMessage,
+                        ErrorMessage: terminalErrorMessage,
                         CorrelationId: job.CorrelationId
                     ),
                     cancellationToken
@@ -911,31 +1019,13 @@ internal sealed class AiEmailAnalysisWorker(
                 continue;
             }
 
-            var errorCode = "AI.EmailJobLeaseExpired";
-            var errorMessage =
-                "El trabajo AI agotó sus intentos después de perder el lease.";
-            var failedEvent =
-                new AiPricingEmailAnalysisFailedIntegrationEvent(
-                    Guid.NewGuid(),
-                    job.ExternalRequestId,
-                    job.EmailExtractionJobId,
-                    job.Id,
-                    job.AiExecutionId,
-                    job.CorrelationId,
-                    job.RequestHash,
-                    errorCode,
-                    errorMessage,
-                    true,
-                    job.AttemptCount,
-                    now
-                );
-            job.MarkFailed(errorCode, errorMessage, job.AiExecutionId);
-            await outbox.WriteAsync(
-                typeof(AiPricingEmailAnalysisFailedIntegrationEvent).FullName!,
-                EmailAnalysisMessageTypes.Failed,
-                failedEvent,
-                job.CorrelationId,
-                cancellationToken
+            const string retryErrorCode = "AI.EmailJobLeaseExpired";
+            const string retryErrorMessage =
+                "El worker AI perdió el lease y el trabajo fue recuperado sin consumir un intento del proveedor.";
+            job.RecoverExpiredLease(
+                retryErrorCode,
+                retryErrorMessage,
+                now
             );
             await audit.PublishAsync(
                 new AiAuditEvent(
@@ -946,43 +1036,46 @@ internal sealed class AiEmailAnalysisWorker(
                     After: new
                     {
                         Status = job.Status.ToString(),
-                        job.AiExecutionId,
+                        job.NextAttemptAtUtc,
+                        job.AttemptCount,
+                        job.MaxAttemptCount,
                         job.ErrorCode,
                         job.ErrorMessage,
-                        job.CompletedAtUtc,
                     },
                     Payload: new
                     {
-                        Stage = "email-lease-failed",
+                        Stage = "email-lease-recovered",
                         Job = CreateJobAuditSnapshot(job),
                         Error = new
                         {
-                            Code = errorCode,
-                            Message = errorMessage,
+                            Code = retryErrorCode,
+                            Message = retryErrorMessage,
                             IsTransient = true,
                         },
-                        PublishedIntegrationEvent = failedEvent,
                     },
                     Metadata: new
                     {
-                        Stage = "email-lease-failed",
-                        Status = "Failed",
+                        Stage = "email-lease-recovered",
+                        Status = "RetryScheduled",
                     },
-                    ErrorMessage: errorMessage,
+                    ErrorMessage: retryErrorMessage,
                     CorrelationId: job.CorrelationId
                 ),
                 cancellationToken
             );
         }
 
-        if (jobs.Count > 0)
+        if (jobs.Count == 0)
         {
-            await dbContext.SaveChangesAsync(cancellationToken);
-            logger.LogWarning(
-                "Se recuperaron {JobCount} AI jobs con lease vencido.",
-                jobs.Count
-            );
+            return;
         }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogWarning(
+            "Se recuperaron {JobCount} AI jobs con lease vencido sin consumir reintentos del proveedor.",
+            jobs.Count
+        );
+        dbContext.ChangeTracker.Clear();
     }
 
     private async Task RenewLeaseLoopAsync(
@@ -991,46 +1084,137 @@ internal sealed class AiEmailAnalysisWorker(
         CancellationToken cancellationToken
     )
     {
-        var heartbeatSeconds = ReadPositiveInt(
-            configuration["AI:EmailJobs:HeartbeatSeconds"],
-            30
+        var heartbeatSeconds = Math.Max(
+            5,
+            ReadPositiveInt(
+                configuration["AI:EmailJobs:HeartbeatSeconds"],
+                15
+            )
         );
         var leaseMinutes = ReadPositiveInt(
             configuration["AI:EmailJobs:LeaseMinutes"],
             30
         );
+
+        // Renueva inmediatamente para no depender del primer tick del timer.
+        if (
+            !await TryRenewLeaseAsync(
+                jobId,
+                leaseOwner,
+                leaseMinutes,
+                cancellationToken
+            )
+        )
+        {
+            return;
+        }
+
         using var timer = new PeriodicTimer(
             TimeSpan.FromSeconds(heartbeatSeconds)
         );
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
-            using var scope = scopeFactory.CreateScope();
-            var heartbeatDbContext =
-                scope.ServiceProvider.GetRequiredService<ServiceDbContext>();
-            var now = DateTime.UtcNow;
-            var updated = await heartbeatDbContext.AiEmailAnalysisJobs
-                .Where(item =>
-                    item.Id == jobId
-                    && item.Status == AiEmailAnalysisJobStatus.Processing
-                    && item.LeaseOwner == leaseOwner
-                )
-                .ExecuteUpdateAsync(
-                    setters => setters
-                        .SetProperty(
-                            item => item.LastHeartbeatAtUtc,
-                            now
-                        )
-                        .SetProperty(
-                            item => item.LeaseExpiresAtUtc,
-                            now.AddMinutes(leaseMinutes)
-                        ),
+            if (
+                !await TryRenewLeaseAsync(
+                    jobId,
+                    leaseOwner,
+                    leaseMinutes,
                     cancellationToken
-                );
-            if (updated == 0)
+                )
+            )
             {
                 return;
             }
         }
+    }
+
+    private async Task<bool> TryRenewLeaseAsync(
+        Guid jobId,
+        string leaseOwner,
+        int leaseMinutes,
+        CancellationToken cancellationToken
+    )
+    {
+        var retryCount = ReadPositiveInt(
+            configuration["AI:EmailJobs:HeartbeatDatabaseRetryCount"],
+            5
+        );
+        var retryDelaySeconds = ReadPositiveInt(
+            configuration["AI:EmailJobs:HeartbeatRetryDelaySeconds"],
+            2
+        );
+
+        for (var attempt = 1; attempt <= retryCount; attempt++)
+        {
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var heartbeatDbContext =
+                    scope.ServiceProvider.GetRequiredService<ServiceDbContext>();
+                var now = DateTime.UtcNow;
+                var updated = await heartbeatDbContext.AiEmailAnalysisJobs
+                    .Where(item =>
+                        item.Id == jobId
+                        && item.Status == AiEmailAnalysisJobStatus.Processing
+                        && item.LeaseOwner == leaseOwner
+                    )
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(
+                                item => item.LastHeartbeatAtUtc,
+                                now
+                            )
+                            .SetProperty(
+                                item => item.LeaseExpiresAtUtc,
+                                now.AddMinutes(leaseMinutes)
+                            ),
+                        cancellationToken
+                    );
+
+                if (updated == 0)
+                {
+                    logger.LogWarning(
+                        "El heartbeat dejó de renovar el AI job {AiJobId} porque el lease ya no pertenece a {LeaseOwner}.",
+                        jobId,
+                        leaseOwner
+                    );
+                    return false;
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "No fue posible renovar el lease del AI job {AiJobId}. Intento de heartbeat {Attempt}/{RetryCount}.",
+                    jobId,
+                    attempt,
+                    retryCount
+                );
+
+                if (attempt < retryCount)
+                {
+                    await Task.Delay(
+                        TimeSpan.FromSeconds(retryDelaySeconds),
+                        cancellationToken
+                    );
+                }
+            }
+        }
+
+        // No se detiene definitivamente el heartbeat por una interrupción temporal
+        // de PostgreSQL. El siguiente tick volverá a intentarlo y el lease amplio
+        // evita que un fallo breve convierta el trabajo en abandonado.
+        logger.LogError(
+            "El heartbeat del AI job {AiJobId} agotó sus reintentos de base de datos; se intentará nuevamente en el próximo ciclo.",
+            jobId
+        );
+        return true;
     }
 
     private async Task<Guid?> FindLatestExecutionIdAsync(

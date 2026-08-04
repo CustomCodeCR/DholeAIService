@@ -35,6 +35,43 @@ public sealed class AsyncEmailAnalysisJobTests
     }
 
     [TestMethod]
+    public void LeaseRecovery_DoesNotConsumeProviderAttempt()
+    {
+        var job = CreateJob(maxAttemptCount: 3);
+
+        job.MarkProcessing("worker-a", DateTime.UtcNow.AddMinutes(30));
+        job.RecoverExpiredLease(
+            "AI.EmailJobLeaseExpired",
+            "lease expired",
+            DateTime.UtcNow
+        );
+
+        Assert.AreEqual(AiEmailAnalysisJobStatus.RetryScheduled, job.Status);
+        Assert.AreEqual(0, job.AttemptCount);
+        Assert.AreEqual(3, job.MaxAttemptCount);
+        Assert.IsNull(job.LeaseOwner);
+        Assert.IsNotNull(job.NextAttemptAtUtc);
+    }
+
+    [TestMethod]
+    public void FailedLeaseJob_CanBeReactivatedAfterDeployment()
+    {
+        var job = CreateJob(maxAttemptCount: 3);
+
+        job.MarkProcessing("worker-a", DateTime.UtcNow.AddMinutes(30));
+        job.MarkFailed(
+            "AI.EmailJobLeaseExpired",
+            "El trabajo AI agotó sus intentos después de perder el lease."
+        );
+        job.RequeueAfterLeaseFailure(DateTime.UtcNow);
+
+        Assert.AreEqual(AiEmailAnalysisJobStatus.RetryScheduled, job.Status);
+        Assert.AreEqual(0, job.AttemptCount);
+        Assert.IsNull(job.CompletedAtUtc);
+        Assert.IsNull(job.LeaseOwner);
+    }
+
+    [TestMethod]
     public void Job_CompletionIsIdempotent()
     {
         var job = CreateJob(maxAttemptCount: 3);

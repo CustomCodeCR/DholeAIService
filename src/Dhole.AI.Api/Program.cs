@@ -6,6 +6,7 @@ using Dhole.AI.Api.Endpoints;
 using Dhole.AI.Api.BackgroundServices;
 using Dhole.AI.Api.Grpc;
 using Dhole.AI.Api.Middleware;
+using Dhole.AI.Api.Services;
 using Dhole.AI.Application.DependencyInjection;
 using Dhole.AI.Infrastructure.DependencyInjection;
 using Dhole.AI.Infrastructure.Time;
@@ -61,6 +62,12 @@ builder.Services.AddPersistence(builder.Configuration);
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddHostedService<AiDefaultProfilesProvisioningService>();
 
+builder.Services.AddHttpClient("ai-file-processing", client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(5);
+});
+builder.Services.AddScoped<AiFileChatService>();
+
 var app = builder.Build();
 
 app.UseCustomCodeApi();
@@ -100,6 +107,7 @@ app.MapAiModelEndpoints();
 app.MapAiProfileEndpoints();
 app.MapAiPromptTemplateEndpoints();
 app.MapAiExecutionEndpoints();
+app.MapAiFileExecutionEndpoints();
 
 using (var scope = app.Services.CreateScope())
 {

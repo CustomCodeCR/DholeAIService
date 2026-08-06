@@ -6,7 +6,7 @@ namespace Dhole.AI.Infrastructure.Providers.Ollama;
 
 internal static class OllamaRequestMapper
 {
-    private const int LegacyLlamaMaximumOutputTokens = 3_072;
+    private const int LegacyLlamaMaximumOutputTokens = 1_536;
     private const int LegacyLlamaMaximumContextTokens = 8_192;
 
     public static JsonObject CreateChatPayload(
@@ -100,10 +100,20 @@ internal static class OllamaRequestMapper
     )
     {
         var requested = Math.Max(128, request.MaximumOutputTokens);
+        if (!IsLegacyLlama(model))
+        {
+            return requested;
+        }
 
-        return request.RequiresStructuredOutput && IsLegacyLlama(model)
-            ? Math.Min(requested, LegacyLlamaMaximumOutputTokens)
-            : requested;
+        var inputCharacters = request.Messages.Sum(message => message.Content?.Length ?? 0);
+        var estimatedInputTokens = (int)Math.Ceiling(inputCharacters / 3.5d);
+        var availableOutputTokens = Math.Max(128,
+            LegacyLlamaMaximumContextTokens - estimatedInputTokens - 512);
+
+        return Math.Min(
+            Math.Min(requested, LegacyLlamaMaximumOutputTokens),
+            availableOutputTokens
+        );
     }
 
     private static int CalculateContextWindow(

@@ -32,12 +32,20 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
         }
 
         return new AiPricingEmailResultRow(
-            ReadString(root, "pol"),
-            ReadString(root, "poe"),
-            ReadString(root, "pod"),
-            ReadString(root, "containerType"),
-            ReadString(root, "carrier"),
-            ReadString(root, "agent"),
+            ReadString(root, "pol", "originPort", "origin_port", "portOfLoading"),
+            ReadString(
+                root,
+                "poe",
+                "portOfExit",
+                "port_of_exit",
+                "portOfDischarge",
+                "destinationPort",
+                "destination_port"
+            ),
+            ReadString(root, "pod", "finalDestination", "placeOfDelivery"),
+            ReadString(root, "containerType", "container_type", "equipmentType", "equipment"),
+            ReadString(root, "carrier", "shippingLine", "shipping_line", "line"),
+            ReadString(root, "agent", "forwarder"),
             ReadString(root, "commodity"),
             ReadString(root, "currency"),
             ReadInt32(root, "freeDays"),
@@ -89,18 +97,30 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
         writer.WriteEndObject();
     }
 
-    private static string? ReadString(JsonElement root, string propertyName)
+    private static string? ReadString(
+        JsonElement root,
+        string propertyName,
+        params string[] aliases
+    )
     {
-        if (!TryGetProperty(root, propertyName, out var element)
-            || element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        foreach (var candidate in new[] { propertyName }.Concat(aliases))
         {
-            return null;
+            if (!TryGetProperty(root, candidate, out var element)
+                || element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                continue;
+            }
+
+            var value = element.ValueKind == JsonValueKind.String
+                ? element.GetString()
+                : element.GetRawText();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
         }
 
-        var value = element.ValueKind == JsonValueKind.String
-            ? element.GetString()
-            : element.GetRawText();
-        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        return null;
     }
 
     private static int? ReadInt32(JsonElement root, string propertyName)

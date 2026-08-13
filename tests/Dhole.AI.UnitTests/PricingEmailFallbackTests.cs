@@ -69,7 +69,7 @@ public sealed class PricingEmailFallbackTests
             imageBytes: null
         ).Single();
 
-        Assert.Contains("fcl-email-v8-deterministic-wwl-nac-recovery", stage.PromptJson);
+        Assert.Contains("fcl-email-v10-newest-thread-priority", stage.PromptJson);
         Assert.Contains("filas compactas", stage.PromptJson, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("processingDateUtc", stage.PromptJson);
         Assert.Contains("ISPS 15/cntr + P/S 50/cntr = 65", stage.PromptJson);
@@ -463,6 +463,86 @@ public sealed class PricingEmailFallbackTests
         Assert.IsTrue(oneRows.Any(row => row.OriginCharges == 450m && row.Pol == "Wuhan"));
         Assert.IsTrue(oneRows.Any(row => row.OriginCharges == 850m && row.Pol == "Chongqing"));
         Assert.IsTrue(result.Warnings.Any(item => item.Contains("MSC=primer monto")));
+    }
+
+
+    [TestMethod]
+    public void ForwardedWwlFakPrompt_KeepsNewestTableAndDropsOlderQuotedOffer()
+    {
+        const string source = """
+            Website : https://logisticacastrofallas.com
+            AVISO LEGAL: Este mensaje es confidencial.
+            ---
+            De: Veronica.jiang <veronica.jiang@wwl.sg>
+            Enviado: miércoles, 12 de agosto de 2026 03:19
+            Asunto: UPDATE FAK WWL / CASTRO FALLAS / 12-AUG
+            Dear Royner,
+            Published FAK for your ref:
+            FAK
+            POL
+            POD
+            CARRIER
+            Free Time
+            Validity (ETD)
+            20'GP
+            40'GP
+            40'HQ
+            SHANGHAI
+            Acajulta/Corinto/Puerto Caldera
+            PIL
+            18 days dry
+            14 Aug-20 Aug
+            $7,700
+            $7,900
+            $7,900
+            Un saludo cordial
+            Veronica Jiang
+            ·¢¼þÈË: Veronica.jiang <veronica.jiang@wwl.sg>
+            ·¢ËÍÊ±¼ä: 2026Äê7ÔÂ31ÈÕ 19:21
+            Ö÷Ìâ: UPDATE FAK WWL / CASTRO FALLAS /31-JULY
+            Published FAK for your ref:
+            FAK
+            POL
+            POD
+            CARRIER
+            Free Time
+            Validity (ETD)
+            20'GP
+            40'GP
+            40'HQ
+            SHANGHAI
+            Acajulta/Corinto/Puerto Caldera
+            PIL
+            18 days dry
+            7 Aug-14 Aug
+            $6,700
+            $6,900
+            $6,900
+            """;
+
+        using var payloadDocument = JsonDocument.Parse("{}");
+        var response = new DataExtractionAiEmailRequestResponse(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), null,
+            "request-hash", "correlation-id", "pricing-email-analysis",
+            payloadDocument.RootElement.Clone(),
+            new DataExtractionAiEmailImageResponse(false, null, null)
+        );
+        var payload = new AiPricingEmailPayload(
+            Guid.NewGuid(), null, "agent@example.com",
+            "UPDATE FAK WWL / CASTRO FALLAS / 12-AUG",
+            source, null, "EmailBody", "email-body.txt", "text/plain", source,
+            "correlation-id", "DataExtraction.NoRows", "No rows", 0m,
+            Array.Empty<AiPreviousPricingEmailRow>(),
+            Array.Empty<AiPreviousExtractionIssue>(),
+            Array.Empty<AiCatalogGroupHint>(), null, null
+        );
+
+        var stage = PricingEmailAiExecutionFactory.CreateStages(response, payload, null).Single();
+
+        StringAssert.Contains(stage.PromptJson, "$7,700");
+        Assert.IsFalse(stage.PromptJson.Contains("$6,700", StringComparison.Ordinal));
+        Assert.IsFalse(stage.PromptJson.Contains("AVISO LEGAL", StringComparison.OrdinalIgnoreCase));
+        StringAssert.Contains(stage.PromptJson, "primera sección visible");
     }
 
 }

@@ -207,7 +207,7 @@ internal static class PricingEmailAiExecutionFactory
         var prompt = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "fcl-email-v8-deterministic-wwl-nac-recovery",
+                taskVersion = "fcl-email-v10-newest-thread-priority",
                 stage = new
                 {
                     name = stage.Name,
@@ -221,17 +221,25 @@ internal static class PricingEmailAiExecutionFactory
                 {
                     "Devuelve solo el JSON del esquema; no inventes valores.",
                     "El contenido fue enfocado al mensaje tarifario más reciente. Ignora cualquier tarifa histórica, firma o conversación citada que todavía aparezca.",
+                    "Si todavía aparece una cadena de respuestas o reenviados, la primera sección visible con una tarifa FCL completa es la vigente. Nunca prefieras una sección posterior solo porque tenga más filas, montos o detalle; las secciones posteriores pertenecen al historial.",
                     "POL es origen; Destination/Port of Discharge/Arrival/Gateway es POE.",
                     "En tarifas marítimas, POD normalmente significa Port of Discharge y se guarda en poe; usa pod solo para Place of Delivery o Final Destination explícito.",
                     "Devuelve filas compactas: agrupa con / los POL o puertos de descarga que compartan exactamente carrier, equipo, mercancía, vigencia, flete y recargos; DataExtraction los expandirá después.",
                     "Separa filas cuando cambie carrier, containerType, commodity, oceanFreight u originCharges; nunca unas varias navieras en una fila.",
+                    "Extrae todas las tablas tarifarias del mensaje actual; una segunda matriz del mismo correo no es historial y no debe omitirse.",
+                    "En columnas de monto por equipo, 20' corresponde a 20DV/20GP. Si el encabezado es 40'/40HC y comparte un monto, devuelve una fila 40DV/40GP y otra 40HC con el mismo oceanFreight.",
+                    "Effective ETD con fecha representa una vigencia de un solo día: usa la misma fecha en validFrom y validTo. Si dice OMIT/OMITTED/NO SAILING/CANCELLED, omite esa ruta de rows y agrega warning.",
                     "Cuando montos y carriers aparecen en listas paralelas, asócialos por posición: USD6300/6400 con MSC/ONE significa MSC=6300 y ONE=6400, salvo evidencia explícita contraria.",
                     "En una tabla o tarifa marítima, POD suele significar Port of Discharge y debe guardarse en poe; pod se reserva para Place of Delivery o Final Destination explícito.",
                     "Si el correo dice Below the details of ONE NAC, las restricciones COMM de A/B/C son solo de ONE. MSC puede conservar una fila general con las rutas compartidas, sin copiar esas mercancías y respetando exclusiones explícitas.",
                     "Un POL con arbitrario distinto debe ir en una fila compacta separada: Tianjin (+ arb USD100) implica originCharges=100; no lo sumes a oceanFreight.",
                     "Suma en surcharges solo cargos por contenedor: ISPS 15/cntr + P/S 50/cntr = 65. Conserva cargos por BL únicamente en remarks.",
+                    "Los recargos condicionales por peso/equipo se conservan en remarks y no se suman automáticamente; por ejemplo ONE overweight surcharge 18-21 tons USD 200/20'.",
+                    "Si aparece General Cargo después de las tablas, úsalo como commodity de esas tarifas salvo mercancía explícita distinta. Conserva Subject to DTHC/local charges en remarks.",
                     "Para cualquier importe desconocido usa null. Nunca uses números gigantes, infinitos, exponentes extremos ni valores centinela; surcharges debe ser un único número decimal razonable.",
                     "Conserva en spaceComment excepciones de espacio como except TIANJIN/XIAMEN y aplícalas solo a la oferta correspondiente.",
+                    "Conserva en spaceComment notas generales de disponibilidad como space is tight, rollovers o confirmación de espacio caso por caso.",
+                    "Una proyección futura de aumento se conserva en remarks como nota comercial y nunca se suma a oceanFreight, surcharges ni totales actuales.",
                     "Usa exactamente nombres canónicos inequívocos de catalogHints.",
                     "Para agent revisa primero subject y luego emailContext; usa solo una coincidencia inequívoca de catalogHints y tolera una errata mínima.",
                     "No deduzcas agent únicamente por la dirección del remitente.",
@@ -1213,7 +1221,10 @@ internal static class PricingEmailAiExecutionFactory
             lines,
             line => Regex.IsMatch(
                 line,
-                @"\b(?:pls|please)\s+consider\s+(?:the\s+)?rate\b|\bpublished\s+fak\b",
+                @"\b(?:pls|please)\s+consider\s+(?:the\s+)?rate\b"
+                    + @"|\bpublished\s+fak\b"
+                    + @"|\b(?:pls|please)\s+(?:check|see|find)\s+(?:the\s+)?(?:below\s+)?(?:the\s+)?(?:updat(?:e|ed)\s+)?rates?\b"
+                    + @"|\bupdat(?:e|ed)\s+rates?\s+for\s+(?:your\s+)?ref(?:erence)?\b",
                 RegexOptions.IgnoreCase
             )
         );
@@ -1234,7 +1245,14 @@ internal static class PricingEmailAiExecutionFactory
                 || line.StartsWith("发件人:", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("De:", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("From:", StringComparison.OrdinalIgnoreCase)
-                || Regex.IsMatch(line, @"^[_=-]{8,}$")
+                || line.StartsWith("Enviado:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("Sent:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("Subject:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("Asunto:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("·¢¼þÈË:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("·¢ËÍÊ±¼ä:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("Ö÷Ìâ:", StringComparison.OrdinalIgnoreCase)
+                || Regex.IsMatch(line, @"^[_=-]{3,}$")
             )
             {
                 end = index;

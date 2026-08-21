@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Base image
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS base
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
 RUN apt-get update && \
   apt-get install -y tzdata apt-utils libgdiplus libc6-dev && \
   ln -s /usr/lib/libgdiplus.so /usr/lib/gdiplus.dll && \

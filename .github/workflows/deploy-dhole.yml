@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: dhole-ai-deploy
@@ -36,11 +37,13 @@ jobs:
 
       - name: Build images
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           SHA_TAG="${GITHUB_SHA::12}"
-          docker build --pull -f src/Dhole.AI.Api/Dockerfile -t dhole/ai-api:latest -t "dhole/ai-api:$SHA_TAG" .
-          docker build --pull -f src/Dhole.AI.Workers/Dockerfile -t dhole/ai-workers:latest -t "dhole/ai-workers:$SHA_TAG" .
+          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.AI.Api/Dockerfile -t dhole/ai-api:latest -t "dhole/ai-api:$SHA_TAG" .
+          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.AI.Workers/Dockerfile -t dhole/ai-workers:latest -t "dhole/ai-workers:$SHA_TAG" .
 
       - name: Deploy AI
         shell: bash

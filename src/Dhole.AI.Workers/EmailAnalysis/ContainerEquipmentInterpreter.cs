@@ -33,7 +33,7 @@ internal static class ContainerEquipmentInterpreter
             return new AiContainerDimensions(size, "Tank", "TK");
         if (suffix.Contains("HIGHCUBE", StringComparison.Ordinal) || suffix.StartsWith("HC", StringComparison.Ordinal) || suffix.StartsWith("HQ", StringComparison.Ordinal))
             return new AiContainerDimensions(size, "High Cube", "HC");
-        if (suffix.Length == 0 && size is "20" or "40"
+        if ((suffix.Length == 0 && size is "20" or "40")
             || suffix.StartsWith("DRY", StringComparison.Ordinal)
             || suffix.StartsWith("DV", StringComparison.Ordinal)
             || suffix.StartsWith("DC", StringComparison.Ordinal)

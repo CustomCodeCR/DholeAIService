@@ -31,6 +31,15 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
             throw new JsonException("Cada elemento de rows debe ser un objeto JSON.");
         }
 
+        var containerType = ReadString(
+            root,
+            "containerType",
+            "container_type",
+            "equipmentType",
+            "equipment"
+        );
+        var dimensions = ContainerEquipmentInterpreter.Parse(containerType);
+
         return new AiPricingEmailResultRow(
             ReadString(root, "pol", "originPort", "origin_port", "portOfLoading"),
             ReadString(
@@ -43,7 +52,7 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
                 "destination_port"
             ),
             ReadString(root, "pod", "finalDestination", "placeOfDelivery"),
-            ReadString(root, "containerType", "container_type", "equipmentType", "equipment"),
+            containerType,
             ReadString(root, "carrier", "shippingLine", "shipping_line", "line"),
             ReadString(root, "agent", "forwarder"),
             ReadString(root, "commodity"),
@@ -62,7 +71,12 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
             ReadDecimal(root, "margin", MaximumMarginAbsoluteValue),
             ReadString(root, "spaceComment"),
             ReadString(root, "remarks")
-        );
+        )
+        {
+            ContainerSize = dimensions?.Size,
+            ContainerKind = dimensions?.Kind,
+            ContainerKindCode = dimensions?.KindCode,
+        };
     }
 
     public override void Write(
@@ -76,6 +90,9 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
         WriteString(writer, "poe", value.Poe);
         WriteString(writer, "pod", value.Pod);
         WriteString(writer, "containerType", value.ContainerType);
+        WriteString(writer, "containerSize", value.ContainerSize);
+        WriteString(writer, "containerKind", value.ContainerKind);
+        WriteString(writer, "containerKindCode", value.ContainerKindCode);
         WriteString(writer, "carrier", value.Carrier);
         WriteString(writer, "agent", value.Agent);
         WriteString(writer, "commodity", value.Commodity);

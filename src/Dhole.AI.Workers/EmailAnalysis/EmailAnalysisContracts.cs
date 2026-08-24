@@ -85,7 +85,13 @@ internal sealed record AiPricingEmailResultRow(
     decimal? Margin,
     string? SpaceComment,
     string? Remarks
-);
+)
+{
+    // Derived by the worker from ContainerType. The AI provider never invents catalog IDs.
+    public string? ContainerSize { get; init; }
+    public string? ContainerKind { get; init; }
+    public string? ContainerKindCode { get; init; }
+}
 
 internal sealed record DataExtractionAiEmailRequestResponse(
     Guid RequestId,

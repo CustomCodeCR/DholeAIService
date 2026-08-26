@@ -1,0 +1,74 @@
+name: Apply email body extraction fix
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/one-shot-email-body-extraction.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply AI email body and Docker DNS fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          settings_path = Path('src/Dhole.AI.Workers/appsettings.json')
+          settings = settings_path.read_text(encoding='utf-8')
+          old_url = '"InternalBaseUrl": "http://192.168.1.12:5205"'
+          new_url = '"InternalBaseUrl": "http://dataextraction-api:8080"'
+          if old_url not in settings:
+              raise SystemExit('Expected DataExtraction InternalBaseUrl was not found')
+          settings_path.write_text(settings.replace(old_url, new_url, 1), encoding='utf-8')
+
+          factory_path = Path('src/Dhole.AI.Workers/EmailAnalysis/PricingEmailAiExecutionFactory.cs')
+          source = factory_path.read_text(encoding='utf-8')
+          source = source.replace('private const int MaximumSourceCharactersPerStage = 8_000;', 'private const int MaximumSourceCharactersPerStage = 12_000;', 1)
+          source = source.replace('private const int MaximumFocusedSourceCharacters = 7_000;', 'private const int MaximumFocusedSourceCharacters = 10_000;', 1)
+          source = source.replace('taskVersion = "fcl-email-v10-newest-thread-priority"', 'taskVersion = "fcl-email-v11-body-multi-table"', 1)
+
+          marker = '                    "Extrae todas las tablas tarifarias del mensaje actual; una segunda matriz del mismo correo no es historial y no debe omitirse.",\n'
+          additions = marker + '''                    "El cuerpo BodyText/BodyHtml es una fuente tarifaria completa aunque no exista adjunto; no rechaces un correo por no tener PDF, Excel o imagen.",
+                    "Si una tabla HTML fue convertida a texto vertical, reconstruye sus columnas usando el orden de encabezados y valores repetidos. Un encabezado PORT OF DESTINATION inicia un bloque independiente y cada bloque debe producir sus propias filas.",
+                    "Reconoce equivalencias de equipo 20-DV/20DV/20' DV como 20DV, 40-DV/40DV/40' DV como 40DV y 40-HC/40HC como 40HC; nunca mezcles los montos entre columnas.",
+                    "Si aparece ASIA BASE PORTS y el mismo correo enumera Base Ports, usa esa lista explícita de puertos como POL compacto separado por / en lugar de devolver literalmente ASIA BASE PORTS.",
+                    "Cuando el proveedor publica OCEAN FREIGHT y TOTAL ALL IN, oceanFreight conserva solo el OCEAN FREIGHT y totalCost conserva exactamente el TOTAL ALL IN publicado. No conviertas totalCost en totalSale. Los cargos por BL pueden quedar en remarks aunque estén incluidos en el total publicado.",
+                    "La vigencia puede estar en subject o body, por ejemplo VALIDO DEL 01 AL 06 DE SEPTIEMBRE 2026; aplícala a todas las filas del bloque tarifario correspondiente.",
+'''
+          if marker not in source:
+              raise SystemExit('Pricing email rules marker was not found')
+          source = source.replace(marker, additions, 1)
+          factory_path.write_text(source, encoding='utf-8')
+
+          tests_path = Path('tests/Dhole.AI.UnitTests/PricingEmailFallbackTests.cs')
+          tests = tests_path.read_text(encoding='utf-8')
+          old_assert = 'Assert.Contains("fcl-email-v10-newest-thread-priority", stage.PromptJson);'
+          if old_assert in tests:
+              tests = tests.replace(old_assert, 'Assert.Contains("fcl-email-v11-body-multi-table", stage.PromptJson);', 1)
+          anchor = '        Assert.Contains("ISPS 15/cntr + P/S 50/cntr = 65", stage.PromptJson);\n'
+          if anchor not in tests:
+              raise SystemExit('Prompt test anchor was not found')
+          tests = tests.replace(anchor, anchor + '        Assert.Contains("BodyText/BodyHtml", stage.PromptJson);\n        Assert.Contains("PORT OF DESTINATION", stage.PromptJson);\n        Assert.Contains("20-DV/20DV", stage.PromptJson);\n        Assert.Contains("TOTAL ALL IN", stage.PromptJson);\n', 1)
+          tests_path.write_text(tests, encoding='utf-8')
+          PY
+
+      - name: Commit functional changes
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/one-shot-email-body-extraction.yml
+          git add src/Dhole.AI.Workers/appsettings.json src/Dhole.AI.Workers/EmailAnalysis/PricingEmailAiExecutionFactory.cs tests/Dhole.AI.UnitTests/PricingEmailFallbackTests.cs
+          git diff --cached --check
+          git commit -m 'fix(ai): extract pricing tables from email bodies'
+          git push origin master

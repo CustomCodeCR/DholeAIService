@@ -10,8 +10,8 @@ namespace Dhole.AI.Worker.EmailAnalysis;
 
 internal static class PricingEmailAiExecutionFactory
 {
-    private const int MaximumSourceCharactersPerStage = 8_000;
-    private const int MaximumFocusedSourceCharacters = 7_000;
+    private const int MaximumSourceCharactersPerStage = 12_000;
+    private const int MaximumFocusedSourceCharacters = 10_000;
     private const int MaximumEmailContextCharacters = 4_000;
     private const int MaximumPreviousRows = 10;
     private const int MaximumPreviousIssues = 16;
@@ -207,7 +207,7 @@ internal static class PricingEmailAiExecutionFactory
         var prompt = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "fcl-email-v10-newest-thread-priority",
+                taskVersion = "fcl-email-v11-body-multi-table",
                 stage = new
                 {
                     name = stage.Name,
@@ -227,6 +227,12 @@ internal static class PricingEmailAiExecutionFactory
                     "Devuelve filas compactas: agrupa con / los POL o puertos de descarga que compartan exactamente carrier, equipo, mercancía, vigencia, flete y recargos; DataExtraction los expandirá después.",
                     "Separa filas cuando cambie carrier, containerType, commodity, oceanFreight u originCharges; nunca unas varias navieras en una fila.",
                     "Extrae todas las tablas tarifarias del mensaje actual; una segunda matriz del mismo correo no es historial y no debe omitirse.",
+                    "El cuerpo BodyText/BodyHtml es una fuente tarifaria completa aunque no exista adjunto; no rechaces un correo por no tener PDF, Excel o imagen.",
+                    "Si una tabla HTML fue convertida a texto vertical, reconstruye sus columnas usando el orden de encabezados y valores repetidos. Un encabezado PORT OF DESTINATION inicia un bloque independiente y cada bloque debe producir sus propias filas.",
+                    "Reconoce equivalencias de equipo 20-DV/20DV/20FT-DV como 20DV, 40-DV/40DV/40FT-DV como 40DV y 40-HC/40HC como 40HC; nunca mezcles los montos entre columnas.",
+                    "Si aparece ASIA BASE PORTS y el mismo correo enumera Base Ports, usa esa lista explícita de puertos como POL compacto separado por / en lugar de devolver literalmente ASIA BASE PORTS.",
+                    "Cuando el proveedor publica OCEAN FREIGHT y TOTAL ALL IN, oceanFreight conserva solo el OCEAN FREIGHT y totalCost conserva exactamente el TOTAL ALL IN publicado. No conviertas totalCost en totalSale. Los cargos por BL pueden quedar en remarks aunque estén incluidos en el total publicado.",
+                    "La vigencia puede estar en subject o body, por ejemplo VALIDO DEL 01 AL 06 DE SEPTIEMBRE 2026; aplícala a todas las filas del bloque tarifario correspondiente.",
                     "En columnas de monto por equipo, 20' corresponde a 20DV/20GP. Si el encabezado es 40'/40HC y comparte un monto, devuelve una fila 40DV/40GP y otra 40HC con el mismo oceanFreight.",
                     "Effective ETD con fecha representa una vigencia de un solo día: usa la misma fecha en validFrom y validTo. Si dice OMIT/OMITTED/NO SAILING/CANCELLED, omite esa ruta de rows y agrega warning.",
                     "Cuando montos y carriers aparecen en listas paralelas, asócialos por posición: USD6300/6400 con MSC/ONE significa MSC=6300 y ONE=6400, salvo evidencia explícita contraria.",

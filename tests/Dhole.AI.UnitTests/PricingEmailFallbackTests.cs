@@ -69,10 +69,14 @@ public sealed class PricingEmailFallbackTests
             imageBytes: null
         ).Single();
 
-        Assert.Contains("fcl-email-v10-newest-thread-priority", stage.PromptJson);
+        Assert.Contains("fcl-email-v11-body-multi-table", stage.PromptJson);
         Assert.Contains("filas compactas", stage.PromptJson, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("processingDateUtc", stage.PromptJson);
         Assert.Contains("ISPS 15/cntr + P/S 50/cntr = 65", stage.PromptJson);
+        Assert.Contains("BodyText/BodyHtml", stage.PromptJson);
+        Assert.Contains("PORT OF DESTINATION", stage.PromptJson);
+        Assert.Contains("20-DV/20DV", stage.PromptJson);
+        Assert.Contains("TOTAL ALL IN", stage.PromptJson);
         Assert.IsFalse(
             stage.PromptJson.Contains(
                 "Crea una fila por combinación aplicable",

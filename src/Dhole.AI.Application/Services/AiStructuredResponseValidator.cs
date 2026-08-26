@@ -8,6 +8,12 @@ namespace Dhole.AI.Application.Services;
 
 public sealed class AiStructuredResponseValidator : IAiStructuredResponseValidator
 {
+    private static readonly JsonDocumentOptions TolerantJsonOptions = new()
+    {
+        AllowTrailingCommas = true,
+        CommentHandling = JsonCommentHandling.Skip,
+    };
+
     public Result<string> Validate(string content, string? jsonSchema)
     {
         if (string.IsNullOrWhiteSpace(content))
@@ -17,12 +23,6 @@ public sealed class AiStructuredResponseValidator : IAiStructuredResponseValidat
 
         try
         {
-            var response = ParseResponseNode(RemoveMarkdownFence(content));
-            if (response is null)
-            {
-                return Result.Failure<string>(AiApplicationErrors.InvalidStructuredOutput);
-            }
-
             JsonObject? schema = null;
             if (!string.IsNullOrWhiteSpace(jsonSchema))
             {
@@ -31,7 +31,16 @@ public sealed class AiStructuredResponseValidator : IAiStructuredResponseValidat
                 {
                     return Result.Failure<string>(AiApplicationErrors.InvalidStructuredOutput);
                 }
+            }
 
+            var response = ParseResponseNode(content, schema);
+            if (response is null)
+            {
+                return Result.Failure<string>(AiApplicationErrors.InvalidStructuredOutput);
+            }
+
+            if (schema is not null)
+            {
                 response = NormalizeEnvelope(response, schema);
                 if (!MatchesRootType(response, schema))
                 {
@@ -49,13 +58,18 @@ public sealed class AiStructuredResponseValidator : IAiStructuredResponseValidat
         }
     }
 
-    private static JsonNode? ParseResponseNode(string content)
+    private static JsonNode? ParseResponseNode(string content, JsonObject? schema)
     {
         var candidate = content;
 
         for (var level = 0; level < 3; level++)
         {
-            var node = JsonNode.Parse(candidate);
+            var node = FindBestJsonNode(candidate, schema);
+            if (node is null)
+            {
+                return null;
+            }
+
             if (node is not JsonValue value || !value.TryGetValue<string>(out var nested))
             {
                 return node;
@@ -66,7 +80,179 @@ public sealed class AiStructuredResponseValidator : IAiStructuredResponseValidat
                 return null;
             }
 
-            candidate = RemoveMarkdownFence(nested);
+            candidate = nested;
+        }
+
+        return null;
+    }
+
+    private static JsonNode? FindBestJsonNode(string content, JsonObject? schema)
+    {
+        var candidate = RemoveMarkdownFence(content);
+        if (TryParseNode(candidate, out var direct))
+        {
+            return direct;
+        }
+
+        JsonNode? best = null;
+        var bestScore = int.MinValue;
+        var bestLength = -1;
+
+        foreach (var fragment in EnumerateJsonFragments(candidate))
+        {
+            if (!TryParseNode(fragment, out var parsed) || parsed is null)
+            {
+                continue;
+            }
+
+            var score = ScoreCandidate(parsed, schema);
+            if (score < bestScore || (score == bestScore && fragment.Length <= bestLength))
+            {
+                continue;
+            }
+
+            best = parsed;
+            bestScore = score;
+            bestLength = fragment.Length;
+        }
+
+        return best;
+    }
+
+    private static bool TryParseNode(string content, out JsonNode? node)
+    {
+        try
+        {
+            node = JsonNode.Parse(content, documentOptions: TolerantJsonOptions);
+            return node is not null;
+        }
+        catch (JsonException)
+        {
+            node = null;
+            return false;
+        }
+    }
+
+    private static int ScoreCandidate(JsonNode node, JsonObject? schema)
+    {
+        if (schema is null)
+        {
+            return 0;
+        }
+
+        var normalized = NormalizeEnvelope(node.DeepClone(), schema);
+        if (!MatchesRootType(normalized, schema))
+        {
+            return -100;
+        }
+
+        var properties = schema["properties"] as JsonObject;
+        if (properties?["rows"] is not null)
+        {
+            return normalized is JsonObject root && ContainsRows(root) ? 100 : 0;
+        }
+
+        if (schema["required"] is not JsonArray required || normalized is not JsonObject objectNode)
+        {
+            return 10;
+        }
+
+        var matches = 0;
+        foreach (var requiredItem in required.OfType<JsonValue>())
+        {
+            if (
+                requiredItem.TryGetValue<string>(out var propertyName)
+                && TryGetProperty(objectNode, propertyName, out _)
+            )
+            {
+                matches++;
+            }
+        }
+
+        return 10 + matches;
+    }
+
+    private static IEnumerable<string> EnumerateJsonFragments(string content)
+    {
+        for (var start = 0; start < content.Length; start++)
+        {
+            if (content[start] is not ('{' or '['))
+            {
+                continue;
+            }
+
+            var fragment = TryExtractBalancedJson(content, start);
+            if (!string.IsNullOrWhiteSpace(fragment))
+            {
+                yield return fragment;
+            }
+        }
+    }
+
+    private static string? TryExtractBalancedJson(string content, int start)
+    {
+        var closings = new Stack<char>();
+        var inString = false;
+        var escaped = false;
+
+        for (var index = start; index < content.Length; index++)
+        {
+            var current = content[index];
+
+            if (inString)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                    continue;
+                }
+
+                if (current == '\\')
+                {
+                    escaped = true;
+                    continue;
+                }
+
+                if (current == '"')
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            if (current == '"')
+            {
+                inString = true;
+                continue;
+            }
+
+            if (current == '{')
+            {
+                closings.Push('}');
+                continue;
+            }
+
+            if (current == '[')
+            {
+                closings.Push(']');
+                continue;
+            }
+
+            if (current is not ('}' or ']'))
+            {
+                continue;
+            }
+
+            if (closings.Count == 0 || closings.Pop() != current)
+            {
+                return null;
+            }
+
+            if (closings.Count == 0)
+            {
+                return content[start..(index + 1)];
+            }
         }
 
         return null;
@@ -98,7 +284,7 @@ public sealed class AiStructuredResponseValidator : IAiStructuredResponseValidat
 
                 if (nested is JsonValue nestedValue && nestedValue.TryGetValue<string>(out var text))
                 {
-                    nested = ParseResponseNode(RemoveMarkdownFence(text));
+                    nested = ParseResponseNode(text, schema);
                 }
 
                 if (nested is null)
@@ -144,7 +330,7 @@ public sealed class AiStructuredResponseValidator : IAiStructuredResponseValidat
 
                 if (rows is JsonValue value && value.TryGetValue<string>(out var text))
                 {
-                    var parsedRows = ParseResponseNode(RemoveMarkdownFence(text));
+                    var parsedRows = ParseResponseNode(text, schema);
                     if (parsedRows is JsonArray parsedArray)
                     {
                         root["rows"] = parsedArray.DeepClone();

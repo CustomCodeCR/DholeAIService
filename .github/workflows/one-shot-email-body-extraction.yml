@@ -20,47 +20,8 @@ jobs:
       - name: Apply AI email body and Docker DNS fixes
         shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          settings_path = Path('src/Dhole.AI.Workers/appsettings.json')
-          settings = settings_path.read_text(encoding='utf-8')
-          old_url = '"InternalBaseUrl": "http://192.168.1.12:5205"'
-          new_url = '"InternalBaseUrl": "http://dataextraction-api:8080"'
-          if old_url not in settings:
-              raise SystemExit('Expected DataExtraction InternalBaseUrl was not found')
-          settings_path.write_text(settings.replace(old_url, new_url, 1), encoding='utf-8')
-
-          factory_path = Path('src/Dhole.AI.Workers/EmailAnalysis/PricingEmailAiExecutionFactory.cs')
-          source = factory_path.read_text(encoding='utf-8')
-          source = source.replace('private const int MaximumSourceCharactersPerStage = 8_000;', 'private const int MaximumSourceCharactersPerStage = 12_000;', 1)
-          source = source.replace('private const int MaximumFocusedSourceCharacters = 7_000;', 'private const int MaximumFocusedSourceCharacters = 10_000;', 1)
-          source = source.replace('taskVersion = "fcl-email-v10-newest-thread-priority"', 'taskVersion = "fcl-email-v11-body-multi-table"', 1)
-
-          marker = '                    "Extrae todas las tablas tarifarias del mensaje actual; una segunda matriz del mismo correo no es historial y no debe omitirse.",\n'
-          additions = marker + '''                    "El cuerpo BodyText/BodyHtml es una fuente tarifaria completa aunque no exista adjunto; no rechaces un correo por no tener PDF, Excel o imagen.",
-                    "Si una tabla HTML fue convertida a texto vertical, reconstruye sus columnas usando el orden de encabezados y valores repetidos. Un encabezado PORT OF DESTINATION inicia un bloque independiente y cada bloque debe producir sus propias filas.",
-                    "Reconoce equivalencias de equipo 20-DV/20DV/20' DV como 20DV, 40-DV/40DV/40' DV como 40DV y 40-HC/40HC como 40HC; nunca mezcles los montos entre columnas.",
-                    "Si aparece ASIA BASE PORTS y el mismo correo enumera Base Ports, usa esa lista explícita de puertos como POL compacto separado por / en lugar de devolver literalmente ASIA BASE PORTS.",
-                    "Cuando el proveedor publica OCEAN FREIGHT y TOTAL ALL IN, oceanFreight conserva solo el OCEAN FREIGHT y totalCost conserva exactamente el TOTAL ALL IN publicado. No conviertas totalCost en totalSale. Los cargos por BL pueden quedar en remarks aunque estén incluidos en el total publicado.",
-                    "La vigencia puede estar en subject o body, por ejemplo VALIDO DEL 01 AL 06 DE SEPTIEMBRE 2026; aplícala a todas las filas del bloque tarifario correspondiente.",
-'''
-          if marker not in source:
-              raise SystemExit('Pricing email rules marker was not found')
-          source = source.replace(marker, additions, 1)
-          factory_path.write_text(source, encoding='utf-8')
-
-          tests_path = Path('tests/Dhole.AI.UnitTests/PricingEmailFallbackTests.cs')
-          tests = tests_path.read_text(encoding='utf-8')
-          old_assert = 'Assert.Contains("fcl-email-v10-newest-thread-priority", stage.PromptJson);'
-          if old_assert in tests:
-              tests = tests.replace(old_assert, 'Assert.Contains("fcl-email-v11-body-multi-table", stage.PromptJson);', 1)
-          anchor = '        Assert.Contains("ISPS 15/cntr + P/S 50/cntr = 65", stage.PromptJson);\n'
-          if anchor not in tests:
-              raise SystemExit('Prompt test anchor was not found')
-          tests = tests.replace(anchor, anchor + '        Assert.Contains("BodyText/BodyHtml", stage.PromptJson);\n        Assert.Contains("PORT OF DESTINATION", stage.PromptJson);\n        Assert.Contains("20-DV/20DV", stage.PromptJson);\n        Assert.Contains("TOTAL ALL IN", stage.PromptJson);\n', 1)
-          tests_path.write_text(tests, encoding='utf-8')
-          PY
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpzZXR0aW5nc19wYXRoID0gUGF0aCgic3JjL0Rob2xlLkFJLldvcmtlcnMvYXBwc2V0dGluZ3MuanNvbiIpCnNldHRpbmdzID0gc2V0dGluZ3NfcGF0aC5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikKb2xkX3VybCA9ICciSW50ZXJuYWxCYXNlVXJsIjogImh0dHA6Ly8xOTIuMTY4LjEuMTI6NTIwNSInCm5ld191cmwgPSAnIkludGVybmFsQmFzZVVybCI6ICJodHRwOi8vZGF0YWV4dHJhY3Rpb24tYXBpOjgwODAiJwppZiBvbGRfdXJsIG5vdCBpbiBzZXR0aW5nczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoIkV4cGVjdGVkIERhdGFFeHRyYWN0aW9uIEludGVybmFsQmFzZVVybCB3YXMgbm90IGZvdW5kIikKc2V0dGluZ3NfcGF0aC53cml0ZV90ZXh0KHNldHRpbmdzLnJlcGxhY2Uob2xkX3VybCwgbmV3X3VybCwgMSksIGVuY29kaW5nPSJ1dGYtOCIpCgpmYWN0b3J5X3BhdGggPSBQYXRoKCJzcmMvRGhvbGUuQUkuV29ya2Vycy9FbWFpbEFuYWx5c2lzL1ByaWNpbmdFbWFpbEFpRXhlY3V0aW9uRmFjdG9yeS5jcyIpCnNvdXJjZSA9IGZhY3RvcnlfcGF0aC5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikKc291cmNlID0gc291cmNlLnJlcGxhY2UoInByaXZhdGUgY29uc3QgaW50IE1heGltdW1Tb3VyY2VDaGFyYWN0ZXJzUGVyU3RhZ2UgPSA4XzAwMDsiLCAicHJpdmF0ZSBjb25zdCBpbnQgTWF4aW11bVNvdXJjZUNoYXJhY3RlcnNQZXJTdGFnZSA9IDEyXzAwMDsiLCAxKQpzb3VyY2UgPSBzb3VyY2UucmVwbGFjZSgicHJpdmF0ZSBjb25zdCBpbnQgTWF4aW11bUZvY3VzZWRTb3VyY2VDaGFyYWN0ZXJzID0gN18wMDA7IiwgInByaXZhdGUgY29uc3QgaW50IE1heGltdW1Gb2N1c2VkU291cmNlQ2hhcmFjdGVycyA9IDEwXzAwMDsiLCAxKQpzb3VyY2UgPSBzb3VyY2UucmVwbGFjZSgndGFza1ZlcnNpb24gPSAiZmNsLWVtYWlsLXYxMC1uZXdlc3QtdGhyZWFkLXByaW9yaXR5IicsICd0YXNrVmVyc2lvbiA9ICJmY2wtZW1haWwtdjExLWJvZHktbXVsdGktdGFibGUiJywgMSkKbWFya2VyID0gJyAgICAgICAgICAgICAgICAgICAgIkV4dHJhZSB0b2RhcyBsYXMgdGFibGFzIHRhcmlmYXJpYXMgZGVsIG1lbnNhamUgYWN0dWFsOyB1bmEgc2VndW5kYSBtYXRyaXogZGVsIG1pc21vIGNvcnJlbyBubyBlcyBoaXN0b3JpYWwgeSBubyBkZWJlIG9taXRpcnNlLiIsXFxuJwpleHRyYSA9ICgKJyAgICAgICAgICAgICAgICAgICAgIkVsIGN1ZXJwbyBCb2R5VGV4dC9Cb2R5SHRtbCBlcyB1bmEgZnVlbnRlIHRhcmlmYXJpYSBjb21wbGV0YSBhdW5xdWUgbm8gZXhpc3RhIGFkanVudG87IG5vIHJlY2hhY2VzIHVuIGNvcnJlbyBwb3Igbm8gdGVuZXIgUERGLCBFeGNlbCBvIGltYWdlbi4iLFxcbicKJyAgICAgICAgICAgICAgICAgICAgIlNpIHVuYSB0YWJsYSBIVE1MIGZ1ZSBjb252ZXJ0aWRhIGEgdGV4dG8gdmVydGljYWwsIHJlY29uc3RydXllIHN1cyBjb2x1bW5hcyB1c2FuZG8gZWwgb3JkZW4gZGUgZW5jYWJlemFkb3MgeSB2YWxvcmVzIHJlcGV0aWRvcy4gVW4gZW5jYWJlemFkbyBQT1JUIE9GIERFU1RJTkFUSU9OIGluaWNpYSB1biBibG9xdWUgaW5kZXBlbmRpZW50ZSB5IGNhZGEgYmxvcXVlIGRlYmUgcHJvZHVjaXIgc3VzIHByb3BpYXMgZmlsYXMuIixcXG4nCicgICAgICAgICAgICAgICAgICAgICJSZWNvbm9jZSBlcXVpdmFsZW5jaWFzIGRlIGVxdWlwbyAyMC1EVi8yMERWLzIwRlQtRFYgY29tbyAyMERWLCA0MC1EVi80MERWLzQwRlQtRFYgY29tbyA0MERWIHkgNDAtSEMvNDBIQyBjb21vIDQwSEM7IG51bmNhIG1lemNsZXMgbG9zIG1vbnRvcyBlbnRyZSBjb2x1bW5hcy4iLFxcbicKJyAgICAgICAgICAgICAgICAgICAgIlNpIGFwYXJlY2UgQVNJQSBCQVNFIFBPUlRTIHkgZWwgbWlzbW8gY29ycmVvIGVudW1lcmEgQmFzZSBQb3J0cywgdXNhIGVzYSBsaXN0YSBleHBsw61jaXRhIGRlIHB1ZXJ0b3MgY29tbyBQT0wgY29tcGFjdG8gc2VwYXJhZG8gcG9yIC8gZW4gbHVnYXIgZGUgZGV2b2x2ZXIgbGl0ZXJhbG1lbnRlIEFTSUEgQkFTRSBQT1JUUy4iLFxcbicKJyAgICAgICAgICAgICAgICAgICAgIkN1YW5kbyBlbCBwcm92ZWVkb3IgcHVibGljYSBPQ0VBTiBGUkVJR0hUIHkgVE9UQUwgQUxMIElOLCBvY2VhbkZyZWlnaHQgY29uc2VydmEgc29sbyBlbCBPQ0VBTiBGUkVJR0hUIHkgdG90YWxDb3N0IGNvbnNlcnZhIGV4YWN0YW1lbnRlIGVsIFRPVEFMIEFMTCBJTiBwdWJsaWNhZG8uIE5vIGNvbnZpZXJ0YXMgdG90YWxDb3N0IGVuIHRvdGFsU2FsZS4gTG9zIGNhcmdvcyBwb3IgQkwgcHVlZGVuIHF1ZWRhciBlbiByZW1hcmtzIGF1bnF1ZSBlc3TDqW4gaW5jbHVpZG9zIGVuIGVsIHRvdGFsIHB1YmxpY2Fkby4iLFxcbicKJyAgICAgICAgICAgICAgICAgICAgIkxhIHZpZ2VuY2lhIHB1ZWRlIGVzdGFyIGVuIHN1YmplY3QgbyBib2R5LCBwb3IgZWplbXBsbyBWQUxJRE8gREVMIDAxIEFMIDA2IERFIFNFUFRJRU1CUkUgMjAyNjsgYXBsw61jYWxhIGEgdG9kYXMgbGFzIGZpbGFzIGRlbCBibG9xdWUgdGFyaWZhcmlvIGNvcnJlc3BvbmRpZW50ZS4iLFxcbicKKQojIHRyYW5zbGF0ZSBsaXRlcmFsIGJhY2tzbGFzaC1uIHRva2VucyB0byBhY3R1YWwgbmV3bGluZQptYXJrZXIgPSBtYXJrZXIucmVwbGFjZSgiXFxuIiwgIlxuIikKZXh0cmEgPSBleHRyYS5yZXBsYWNlKCJcXG4iLCAiXG4iKQppZiBtYXJrZXIgbm90IGluIHNvdXJjZToKICAgIHJhaXNlIFN5c3RlbUV4aXQoIlByaWNpbmcgZW1haWwgcnVsZXMgbWFya2VyIHdhcyBub3QgZm91bmQiKQpzb3VyY2UgPSBzb3VyY2UucmVwbGFjZShtYXJrZXIsIG1hcmtlciArIGV4dHJhLCAxKQpmYWN0b3J5X3BhdGgud3JpdGVfdGV4dChzb3VyY2UsIGVuY29kaW5nPSJ1dGYtOCIpCgp0ZXN0c19wYXRoID0gUGF0aCgidGVzdHMvRGhvbGUuQUkuVW5pdFRlc3RzL1ByaWNpbmdFbWFpbEZhbGxiYWNrVGVzdHMuY3MiKQp0ZXN0cyA9IHRlc3RzX3BhdGgucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCnRlc3RzID0gdGVzdHMucmVwbGFjZSgnQXNzZXJ0LkNvbnRhaW5zKCJmY2wtZW1haWwtdjEwLW5ld2VzdC10aHJlYWQtcHJpb3JpdHkiLCBzdGFnZS5Qcm9tcHRKc29uKTsnLCAnQXNzZXJ0LkNvbnRhaW5zKCJmY2wtZW1haWwtdjExLWJvZHktbXVsdGktdGFibGUiLCBzdGFnZS5Qcm9tcHRKc29uKTsnLCAxKQphbmNob3IgPSAnICAgICAgICBBc3NlcnQuQ29udGFpbnMoIklTUFMgMTUvY250ciArIFAvUyA1MC9jbnRyID0gNjUiLCBzdGFnZS5Qcm9tcHRKc29uKTtcXG4nLnJlcGxhY2UoIlxcbiIsICJcbiIpCmlmIGFuY2hvciBub3QgaW4gdGVzdHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJQcm9tcHQgdGVzdCBhbmNob3Igd2FzIG5vdCBmb3VuZCIpCnRlc3RzID0gdGVzdHMucmVwbGFjZShhbmNob3IsIGFuY2hvciArICcgICAgICAgIEFzc2VydC5Db250YWlucygiQm9keVRleHQvQm9keUh0bWwiLCBzdGFnZS5Qcm9tcHRKc29uKTtcbiAgICAgICAgQXNzZXJ0LkNvbnRhaW5zKCJQT1JUIE9GIERFU1RJTkFUSU9OIiwgc3RhZ2UuUHJvbXB0SnNvbik7XG4gICAgICAgIEFzc2VydC5Db250YWlucygiMjAtRFYvMjBEViIsIHN0YWdlLlByb21wdEpzb24pO1xuICAgICAgICBBc3NlcnQuQ29udGFpbnMoIlRPVEFMIEFMTCBJTiIsIHN0YWdlLlByb21wdEpzb24pO1xuJywgMSkKdGVzdHNfcGF0aC53cml0ZV90ZXh0KHRlc3RzLCBlbmNvZGluZz0idXRmLTgiKQo=' | base64 -d > /tmp/apply-email-fix.py
+          python /tmp/apply-email-fix.py
 
       - name: Commit functional changes
         shell: bash

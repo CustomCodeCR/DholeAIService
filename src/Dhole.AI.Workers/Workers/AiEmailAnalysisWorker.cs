@@ -404,10 +404,9 @@ internal sealed class AiEmailAnalysisWorker(
                 return;
             }
 
-            var parsed = PricingEmailAiExecutionFactory.NormalizeForSource(
-                PricingEmailAiExecutionFactory.Merge(parsedStages),
-                payload
-            );
+            // AI owns semantic extraction only. DataExtraction receives these facts and
+            // performs catalog resolution, canonicalization and business validation.
+            var parsed = PricingEmailAiExecutionFactory.Merge(parsedStages);
             var primaryResult = successfulOutputs[^1];
             var completedEvent =
                 new AiPricingEmailAnalysisCompletedIntegrationEvent(

@@ -207,7 +207,7 @@ internal static class PricingEmailAiExecutionFactory
         var prompt = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "fcl-email-v11-body-multi-table",
+                taskVersion = "fcl-email-v12-semantic-extraction",
                 stage = new
                 {
                     name = stage.Name,
@@ -220,6 +220,7 @@ internal static class PricingEmailAiExecutionFactory
                 rules = new[]
                 {
                     "Devuelve solo el JSON del esquema; no inventes valores.",
+                    "Tu responsabilidad termina en extracción semántica. Conserva los valores observados en la fuente; DataExtraction normaliza catálogos, equipos, rutas, moneda, fechas y reglas de negocio antes de Pricing.",
                     "El contenido fue enfocado al mensaje tarifario más reciente. Ignora cualquier tarifa histórica, firma o conversación citada que todavía aparezca.",
                     "Si todavía aparece una cadena de respuestas o reenviados, la primera sección visible con una tarifa FCL completa es la vigente. Nunca prefieras una sección posterior solo porque tenga más filas, montos o detalle; las secciones posteriores pertenecen al historial.",
                     "POL es origen; Destination/Port of Discharge/Arrival/Gateway es POE.",
@@ -246,8 +247,8 @@ internal static class PricingEmailAiExecutionFactory
                     "Conserva en spaceComment excepciones de espacio como except TIANJIN/XIAMEN y aplícalas solo a la oferta correspondiente.",
                     "Conserva en spaceComment notas generales de disponibilidad como space is tight, rollovers o confirmación de espacio caso por caso.",
                     "Una proyección futura de aumento se conserva en remarks como nota comercial y nunca se suma a oceanFreight, surcharges ni totales actuales.",
-                    "Usa exactamente nombres canónicos inequívocos de catalogHints.",
-                    "Para agent revisa primero subject y luego emailContext; usa solo una coincidencia inequívoca de catalogHints y tolera una errata mínima.",
+                    "No resuelvas IDs, codes, slugs ni nombres canónicos internos de Dhole. Devuelve el nombre o etiqueta que realmente aparece en la evidencia; DataExtraction hará la equivalencia contra Config.",
+                    "Para agent revisa primero subject y luego emailContext; devuelve únicamente el nombre explícito que aparezca en la evidencia. No lo conviertas a códigos, IDs o nombres internos.",
                     "No deduzcas agent únicamente por la dirección del remitente.",
                     "Para el patrón narrativo MSC/ONE NAC con tarifa USDx/y y equipo omitido, containerType es obligatorio y debe ser 40HC; no lo devuelvas como null.",
                     "Resuelve rangos sin año con processingDateUtc y devuelve fechas YYYY-MM-DD.",
@@ -271,17 +272,7 @@ internal static class PricingEmailAiExecutionFactory
                             ?? payload.SourceImageMimeType,
                     }
                     : null,
-                catalogHints = payload.CatalogHints.Select(group => new
-                {
-                    group = group.GroupSlug,
-                    items = group.Items
-                        .Take(MaximumCatalogItemsPerGroup)
-                        .Select(item => new
-                        {
-                            item.Name,
-                            item.Code,
-                        }),
-                }),
+                normalizationOwner = "DataExtraction",
                 previousExtraction = stage.IncludePreviousExtraction
                     ? new
                     {

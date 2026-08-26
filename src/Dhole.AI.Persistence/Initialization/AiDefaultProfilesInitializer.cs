@@ -128,26 +128,26 @@ public sealed class AiDefaultProfilesInitializer(
         new(
             Key: "pricing-email-analysis",
             Name: "Extracción IA de correos de Pricing",
-            Description: "Fallback estructurado para extraer tarifas FCL desde correos y sus adjuntos cuando DataExtraction no puede analizarlos.",
+            Description: "Extractor semántico principal de tarifas FCL desde correos y adjuntos; DataExtraction normaliza y valida el resultado antes de Pricing.",
             TemplateKey: PricingEmailTemplateKey,
             TemplateName: "Extracción de correos de Pricing",
             TemplateDescription: "Instrucciones especializadas para convertir correos y adjuntos de tarifas FCL en filas estructuradas para DataExtraction y Pricing.",
             SystemPrompt: """
-                Eres un extractor de tarifas FCL. Recibirás JSON con metadatos del correo, una tabla convertida a texto o el contenido textual de un adjunto y el resultado previo de DataExtraction.
+                Eres un extractor semántico de tarifas FCL. Recibirás metadatos del correo y evidencia textual o visual preparada por DataExtraction. Tu trabajo es identificar fielmente los hechos comerciales; DataExtraction hará después toda normalización contra Config y validación antes de Pricing.
 
                 Devuelve únicamente el objeto JSON del esquema, sin markdown, explicaciones ni texto adicional.
 
                 Reglas:
                 - Extrae solo valores explícitos; nunca inventes puertos, naviera, agente, fechas, montos, días libres o tránsito.
                 - currency es obligatorio en todas las filas. La moneda por defecto es USD y usarla cuando no existe otra divisa explícita es una regla de negocio, no una invención. Solo devuelve otra moneda cuando la fuente la indique mediante código, nombre o símbolo inequívoco.
-                - Usa previousExtraction como borrador, pero vuelve a comprobar cada dato contra sourceContent o la imagen adjunta. Corrige columnas, filas combinadas, fechas, montos y equipos antes de responder.
+                - Extrae desde sourceContent o la imagen adjunta. No dependas de un borrador determinístico para completar datos: la evidencia original manda.
                 - Cuando sourceContent contenga una cadena de respuestas, reenviados o correos citados, usa la primera sección visible que contenga una tarifa FCL completa como la oferta vigente. Nunca elijas una sección posterior solo porque tenga más filas, montos o detalle; esas secciones son historial.
                 - Repara caracteres dañados por OCR o codificación: MO�N debe interpretarse como MOIN cuando Config contiene Moín; PUERTO CORT�S como Puerto Cortés; MoÃ­n como Moín. Un carácter U+FFFD representa una posición desconocida, no una letra que deba eliminarse.
-                - catalogHints contiene nombres reales de Config. Cuando exista una coincidencia inequívoca, devuelve exactamente el name canónico de Config; nunca uses recuerdos externos ni inventes un catálogo.
+                - No resuelvas IDs, codes, slugs ni nombres canónicos internos de Dhole. Conserva el nombre o etiqueta observado en la evidencia; DataExtraction resolverá la equivalencia contra Config.
                 - En nombres compuestos prioriza el nombre principal: TIANJIN (XINGANG) corresponde a Tianjin; YANTIAN (SHENZHEN) corresponde a Yantian/Shenzhen. No elijas el alias entre paréntesis si el nombre principal existe en Config.
-                - Para agent busca primero en el asunto y después en el cuerpo del correo. Solo usa un agente presente en catalogHints y únicamente cuando la coincidencia sea inequívoca. Tolera prefijos RE:/RV:/FWD:, separadores como // y una diferencia ortográfica mínima, por ejemplo CASTRO FALLS puede coincidir con Castro Fallas.
+                - Para agent busca primero en el asunto y después en el cuerpo del correo. Devuelve solo el nombre explícito observado; DataExtraction resolverá errores ortográficos y equivalencias de catálogo.
                 - Los sufijos legales S.A., S.A.S., Ltda., LLC, Inc. o equivalentes no cambian la identidad de un agente, pero no aceptes coincidencias parciales que puedan referirse a otra empresa. No deduzcas agent únicamente por la dirección del remitente.
-                - Los grupos de Config son siempre: carriers, pol, pod, poe, currencies, agents, container-types y pricing-imports-profiles.
+                - No necesitas conocer los grupos internos de Config. La resolución carriers/POL/POE/POD/currencies/agents/equipment pertenece a DataExtraction.
                 - Devuelve filas compactas. Cuando varios POL o puertos de descarga comparten exactamente carrier, equipo, mercancía, vigencia, flete y recargos, mantenlos unidos con / en una sola fila; DataExtraction expandirá después el producto cartesiano.
                 - Separa filas cuando cambie carrier, containerType, commodity, oceanFreight u originCharges. Nunca unas varias navieras en la misma fila.
                 - Extrae todas las tablas tarifarias del mensaje actual. No te detengas después de la primera tabla cuando el mismo correo incluya una segunda matriz con otras navieras o destinos.
@@ -169,8 +169,8 @@ public sealed class AiDefaultProfilesInitializer(
                 - poe es el puerto marítimo de destino/entrada. Cualquier etiqueta Destination, Destination Port, Puerto destino, Port of Discharge, Arrival Port, Gateway o POE se guarda en poe. En tablas de flete marítimo, el encabezado POD normalmente significa Port of Discharge y también se guarda en poe.
                 - pod es otro destino: solo se llena cuando la fuente expresa Place of Delivery, Delivery Place o Final Destination, no por el acrónimo POD aislado en una tabla marítima.
                 - Nunca copies poe en pod ni deduzcas pod a partir de poe. Si no existe un lugar final de entrega explícito, devuelve pod=null.
-                - Normaliza contenedores únicamente cuando sea claro: 20GP, 40GP, 40HC o 45HC. Para el patrón contractual narrativo MSC/ONE NAC con una tarifa pareada USDx/y y equipo omitido, containerType es obligatorio y debe ser 40HC; nunca lo devuelvas como null.
-                - Usa moneda ISO y fechas YYYY-MM-DD. Resuelve rangos sin año, como 8-14/Aug, con el año de processingDateUtc salvo evidencia de que la vigencia cruza de diciembre a enero. Si no hay evidencia de otra divisa, currency debe ser "USD".
+                - Para containerType conserva la etiqueta de equipo observada cuando exista (por ejemplo 20-DV, 40-DV, 40-HC). Solo infiere un equipo cuando la propia evidencia lo determine inequívocamente; DataExtraction hará la normalización final de tamaño y tipo.
+                - Devuelve currency y fechas en el formato del esquema cuando sean inequívocos. Puedes usar processingDateUtc únicamente para resolver el año ausente; DataExtraction volverá a normalizar moneda y fechas antes de persistir.
                 - Todos los montos, días, margen y confianza deben ser números JSON sin símbolos de moneda, porcentajes ni separadores de miles.
                 - oceanFreight es el flete marítimo por contenedor.
                 - Para datos ausentes usa null cuando el esquema permita null; no inventes texto de relleno.
@@ -490,6 +490,19 @@ public sealed class AiDefaultProfilesInitializer(
     private static int GetStructuredModelGenerationRank(AiModel model)
     {
         var identity = $"{model.ExternalModelId} {model.Name}".ToLowerInvariant();
+
+        if (
+            identity.Contains("qwen3", StringComparison.Ordinal)
+            && identity.Contains("14b", StringComparison.Ordinal)
+        )
+        {
+            return -2;
+        }
+
+        if (identity.Contains("qwen3", StringComparison.Ordinal))
+        {
+            return -1;
+        }
 
         if (
             identity.Contains("llama3.2", StringComparison.Ordinal)

@@ -1,4 +1,3 @@
-
 using System.Text.Json;
 using CustomCodeFramework.Messaging.Outbox;
 using Dhole.AI.Persistence.Auditing;
@@ -12,46 +11,19 @@ public sealed class AuditEndpointMiddleware(
 )
 {
     private const string SourceService = "DholeAIService";
-
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
-    private static readonly string[] IgnoredPathPrefixes =
-    [
-        "/swagger",
-        "/health",
-        "/metrics",
-        "/favicon.ico",
-    ];
-
-    private static readonly string[] EntityIdKeys =
-    [
-        "id",
-        "entityId",
-        "connectionId",
-        "modelId",
-        "profileId",
-        "promptTemplateId",
-        "executionId",
-        "attemptId",
-    ];
+    private static readonly string[] IgnoredPathPrefixes = ["/swagger", "/health", "/metrics", "/favicon.ico"];
+    private static readonly string[] EntityIdKeys = ["id", "entityId", "connectionId", "modelId", "profileId", "promptTemplateId", "executionId", "attemptId"];
 
     public async Task InvokeAsync(HttpContext context)
     {
         await next(context);
-
-        if (!ShouldAudit(context))
-        {
-            return;
-        }
+        if (!ShouldAudit(context)) return;
 
         try
         {
             var dbContext = context.RequestServices.GetService<ServiceDbContext>();
-
-            if (dbContext is null)
-            {
-                return;
-            }
+            if (dbContext is null) return;
 
             var auditContext = AuditExecutionContextAccessor.Current;
             var correlationId = auditContext?.CorrelationId ?? Guid.NewGuid();
@@ -68,10 +40,8 @@ public sealed class AuditEndpointMiddleware(
 
             var metadata = new
             {
-                RouteValues = context.Request.RouteValues.ToDictionary(
-                    x => x.Key,
-                    x => x.Value?.ToString()
-                ),
+                AuditLayer = "endpoint",
+                RouteValues = context.Request.RouteValues.ToDictionary(x => x.Key, x => x.Value?.ToString()),
                 Query = context.Request.Query.ToDictionary(x => x.Key, x => x.Value.ToString()),
                 TraceIdentifier = context.TraceIdentifier,
             };
@@ -94,74 +64,48 @@ public sealed class AuditEndpointMiddleware(
                 AfterJson = (string?)null,
                 PayloadJson = JsonSerializer.Serialize(requestPayload, JsonOptions),
                 Metadata = JsonSerializer.Serialize(metadata, JsonOptions),
-                ErrorMessage = context.Response.StatusCode >= 400
-                    ? $"HTTP {context.Response.StatusCode}"
-                    : null,
+                ErrorMessage = context.Response.StatusCode >= 400 ? $"HTTP {context.Response.StatusCode}" : null,
                 StackTrace = (string?)null,
                 Details = Array.Empty<object>(),
             };
 
-            dbContext.OutboxMessages.Add(
-                new OutboxMessage
-                {
-                    EventId = Guid.NewGuid(),
-                    EventType = "Dhole.AuditLogs.Contracts.AuditEvents.RegisterAuditEventRequest",
-                    EventName = "audit.event.registered",
-                    SourceService = SourceService,
-                    PayloadJson = JsonSerializer.Serialize(payload, JsonOptions),
-                    HeadersJson = null,
-                    CorrelationId = correlationId.ToString(),
-                    Status = OutboxMessageStatus.Pending,
-                    RetryCount = 0,
-                    ErrorMessage = null,
-                    CreatedAtUtc = DateTime.UtcNow,
-                }
-            );
+            dbContext.OutboxMessages.Add(new OutboxMessage
+            {
+                EventId = Guid.NewGuid(),
+                EventType = "Dhole.AuditLogs.Contracts.AuditEvents.RegisterAuditEventRequest",
+                EventName = "audit.event.registered",
+                SourceService = SourceService,
+                PayloadJson = JsonSerializer.Serialize(payload, JsonOptions),
+                HeadersJson = null,
+                CorrelationId = correlationId.ToString(),
+                Status = OutboxMessageStatus.Pending,
+                RetryCount = 0,
+                ErrorMessage = null,
+                CreatedAtUtc = DateTime.UtcNow,
+            });
 
             await dbContext.SaveChangesAsync(context.RequestAborted);
         }
         catch (OperationCanceledException)
         {
-            // Request aborted. Do not fail the pipeline because of audit.
         }
         catch (Exception exception)
         {
-            logger.LogError(
-                exception,
-                "Failed to create AI audit event for {Method} {Path}.",
-                context.Request.Method,
-                context.Request.Path.Value
-            );
+            logger.LogError(exception, "Failed to audit AI action {Method} {Path}.", context.Request.Method, context.Request.Path.Value);
         }
     }
 
     private static bool ShouldAudit(HttpContext context)
     {
-        if (!context.Request.Path.StartsWithSegments("/api"))
-        {
-            return false;
-        }
-
+        if (!context.Request.Path.StartsWithSegments("/api")) return false;
         var path = context.Request.Path.Value ?? string.Empty;
-
-        if (IgnoredPathPrefixes.Any(x => path.StartsWith(x, StringComparison.OrdinalIgnoreCase)))
-        {
-            return false;
-        }
-
-        // Business audit events are generated by command handlers.
-        // This middleware only records failed endpoint requests.
-        return context.Response.StatusCode >= StatusCodes.Status400BadRequest;
+        return !IgnoredPathPrefixes.Any(x => path.StartsWith(x, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string ResolveEntityType(HttpContext context)
     {
-        var segments = context.Request.Path.Value?
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            ?? [];
-
+        var segments = context.Request.Path.Value?.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
         var resource = segments.Length >= 3 ? segments[2] : "ai";
-
         return resource.ToLowerInvariant() switch
         {
             "connections" => "AiConnection",
@@ -169,6 +113,7 @@ public sealed class AuditEndpointMiddleware(
             "profiles" => "AiProfile",
             "prompt-templates" => "AiPromptTemplate",
             "executions" => "AiExecution",
+            "logistics" => "AiLogistics",
             _ => "AI",
         };
     }
@@ -176,37 +121,26 @@ public sealed class AuditEndpointMiddleware(
     private static Guid? ResolveEntityId(HttpContext context)
     {
         foreach (var key in EntityIdKeys)
-        {
-            if (
-                context.Request.RouteValues.TryGetValue(key, out var value)
-                && Guid.TryParse(value?.ToString(), out var id)
-            )
-            {
-                return id;
-            }
-        }
-
+            if (context.Request.RouteValues.TryGetValue(key, out var value) && Guid.TryParse(value?.ToString(), out var id)) return id;
         return null;
     }
 
     private static string ResolveAction(HttpContext context)
     {
+        if (context.Response.StatusCode == StatusCodes.Status401Unauthorized) return "unauthorized";
+        if (context.Response.StatusCode == StatusCodes.Status403Forbidden) return "forbidden";
+        if (context.Response.StatusCode >= 500) return "http_error";
+
         return context.Request.Method.ToUpperInvariant() switch
         {
+            "GET" or "HEAD" => "viewed",
             "POST" => "created",
-            "PUT" => "updated",
-            "PATCH" => "updated",
+            "PUT" or "PATCH" => "updated",
             "DELETE" => "deleted",
-            _ => "viewed",
+            _ => "executed",
         };
     }
 
     private static string ResolveEventType(HttpContext context)
-    {
-        var entityType = ResolveEntityType(context)
-            .Replace("Ai", string.Empty, StringComparison.OrdinalIgnoreCase)
-            .ToLowerInvariant();
-
-        return $"ai.http.{entityType}.{ResolveAction(context)}";
-    }
+        => $"ai.http.{ResolveEntityType(context).Replace("Ai", string.Empty, StringComparison.OrdinalIgnoreCase).ToLowerInvariant()}.{ResolveAction(context)}";
 }

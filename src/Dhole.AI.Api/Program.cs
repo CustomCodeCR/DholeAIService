@@ -73,6 +73,13 @@ builder.Services.AddHttpClient("nominatim", client =>
     client.DefaultRequestHeaders.UserAgent.ParseAdd("DholeAIService/1.0 (+https://customcodecr.com)");
     client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
 });
+builder.Services.AddHttpClient("overpass", client =>
+{
+    client.BaseAddress = new Uri("https://overpass-api.de/api/");
+    client.Timeout = TimeSpan.FromSeconds(35);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("DholeAIService/1.0 (+https://customcodecr.com)");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+});
 builder.Services.AddScoped<AiFileChatService>();
 
 var app = builder.Build();

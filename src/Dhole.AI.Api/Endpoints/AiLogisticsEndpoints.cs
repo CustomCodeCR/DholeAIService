@@ -148,17 +148,18 @@ public static class AiLogisticsEndpoints
             })
         );
 
-        var systemPrompt = $"""
-            Eres un especialista en logística internacional. Debes recomendar únicamente puertos incluidos en la lista de candidatos recibida.
-            El punto de referencia es EXCLUSIVAMENTE la ubicación de recolección marcada por el usuario, no el POL que estuviera seleccionado previamente.
-            Todos los candidatos ya fueron filtrados matemáticamente para estar a un máximo de {radiusKm:0} km del punto EXW.
-            Usa distancia, viabilidad logística y cercanía para ordenar las opciones. Nunca inventes puertos, IDs ni datos fuera de la lista.
-            Devuelve máximo 3 opciones ordenadas de mejor a peor y conserva exactamente la distancia recibida para cada puerto.
-            La interfaz permitirá al usuario cambiar el POL a una de estas opciones; no asumas que el POL actual debe conservarse.
-            Responde EXCLUSIVAMENTE JSON válido, sin markdown, con este formato:
-            {{"recommendations":[{{"portId":"GUID","distanceKm":123.4,"reason":"explicación breve"}}]}}
-            Si no puedes determinar una opción con suficiente confianza, devuelve {{"recommendations":[]}}.
-            """;
+        var systemPrompt = string.Join(
+            '\n',
+            "Eres un especialista en logística internacional. Debes recomendar únicamente puertos incluidos en la lista de candidatos recibida.",
+            "El punto de referencia es EXCLUSIVAMENTE la ubicación de recolección marcada por el usuario, no el POL que estuviera seleccionado previamente.",
+            $"Todos los candidatos ya fueron filtrados matemáticamente para estar a un máximo de {radiusKm:0} km del punto EXW.",
+            "Usa distancia, viabilidad logística y cercanía para ordenar las opciones. Nunca inventes puertos, IDs ni datos fuera de la lista.",
+            "Devuelve máximo 3 opciones ordenadas de mejor a peor y conserva exactamente la distancia recibida para cada puerto.",
+            "La interfaz permitirá al usuario cambiar el POL a una de estas opciones; no asumas que el POL actual debe conservarse.",
+            "Responde EXCLUSIVAMENTE JSON válido, sin markdown, con este formato:",
+            "{\"recommendations\":[{\"portId\":\"GUID\",\"distanceKm\":123.4,\"reason\":\"explicación breve\"}]}",
+            "Si no puedes determinar una opción con suficiente confianza, devuelve {\"recommendations\":[]} ."
+        );
 
         var locationText = $"{pickupAddress ?? "Dirección no indicada"} | coordenadas {pickupLatitude}, {pickupLongitude}";
 

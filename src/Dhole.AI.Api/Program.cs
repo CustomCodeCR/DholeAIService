@@ -66,6 +66,13 @@ builder.Services.AddHttpClient("ai-file-processing", client =>
 {
     client.Timeout = TimeSpan.FromMinutes(5);
 });
+builder.Services.AddHttpClient("nominatim", client =>
+{
+    client.BaseAddress = new Uri("https://nominatim.openstreetmap.org/");
+    client.Timeout = TimeSpan.FromSeconds(20);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("DholeAIService/1.0 (+https://customcodecr.com)");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+});
 builder.Services.AddScoped<AiFileChatService>();
 
 var app = builder.Build();

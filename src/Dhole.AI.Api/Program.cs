@@ -108,6 +108,7 @@ app.MapAiProfileEndpoints();
 app.MapAiPromptTemplateEndpoints();
 app.MapAiExecutionEndpoints();
 app.MapAiFileExecutionEndpoints();
+app.MapAiLogisticsEndpoints();
 
 using (var scope = app.Services.CreateScope())
 {

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using CustomCodeFramework.Cqrs.Dispatching;
 using Dhole.AI.Api.Authorization;
@@ -12,6 +13,7 @@ public static class AiLogisticsEndpoints
     private const string PricingWorkspaceScope = "pricing.workspace.access";
     private const string ProfileKey = "assistant";
     private const decimal MaximumAllowedRadiusKm = 500m;
+    private const int MaximumGeocodeAttempts = 30;
 
     public static IEndpointRouteBuilder MapAiLogisticsEndpoints(this IEndpointRouteBuilder app)
     {
@@ -30,6 +32,7 @@ public static class AiLogisticsEndpoints
     private static async Task<IResult> RecommendNearestPortsAsync(
         NearestPortsRequest request,
         ICommandDispatcher dispatcher,
+        IHttpClientFactory httpClientFactory,
         HttpContext httpContext,
         CancellationToken cancellationToken
     )
@@ -50,26 +53,70 @@ public static class AiLogisticsEndpoints
         var radiusKm = Math.Clamp(requestedRadiusKm, 1m, MaximumAllowedRadiusKm);
         var pickupLatitude = request.Latitude.Value;
         var pickupLongitude = request.Longitude.Value;
+        var nominatim = httpClientFactory.CreateClient("nominatim");
 
-        var ports = request.Ports
-            .Where(port =>
-                port.Id != Guid.Empty
-                && !string.IsNullOrWhiteSpace(port.Name)
-                && port.Latitude.HasValue
-                && port.Longitude.HasValue
-            )
-            .Select(port => new
+        var pickupCountry = await ResolvePickupCountryAsync(
+            nominatim,
+            pickupLatitude,
+            pickupLongitude,
+            cancellationToken
+        );
+
+        var configuredPorts = request.Ports
+            .Where(port => port.Id != Guid.Empty && !string.IsNullOrWhiteSpace(port.Name))
+            .GroupBy(port => port.Id)
+            .Select(group => group.First())
+            .ToArray();
+
+        var resolvedPorts = new List<ResolvedPortCandidate>(configuredPorts.Length);
+        var geocodeAttempts = 0;
+
+        foreach (var port in configuredPorts)
+        {
+            if (port.Latitude.HasValue && port.Longitude.HasValue)
             {
-                Port = port,
+                resolvedPorts.Add(new ResolvedPortCandidate(
+                    port,
+                    port.Latitude.Value,
+                    port.Longitude.Value
+                ));
+                continue;
+            }
+
+            if (!CouldBelongToPickupCountry(port, pickupCountry)) continue;
+            if (geocodeAttempts >= MaximumGeocodeAttempts) continue;
+
+            geocodeAttempts += 1;
+            var coordinates = await ResolvePortCoordinatesAsync(
+                nominatim,
+                port,
+                pickupCountry,
+                cancellationToken
+            );
+
+            if (coordinates is not null)
+            {
+                resolvedPorts.Add(new ResolvedPortCandidate(
+                    port,
+                    coordinates.Value.Latitude,
+                    coordinates.Value.Longitude
+                ));
+            }
+        }
+
+        var ports = resolvedPorts
+            .Select(candidate => new
+            {
+                Candidate = candidate,
                 DistanceKm = CalculateDistanceKm(
                     pickupLatitude,
                     pickupLongitude,
-                    port.Latitude!.Value,
-                    port.Longitude!.Value
+                    candidate.Latitude,
+                    candidate.Longitude
                 ),
             })
             .Where(candidate => candidate.DistanceKm <= radiusKm)
-            .GroupBy(candidate => candidate.Port.Id)
+            .GroupBy(candidate => candidate.Candidate.Port.Id)
             .Select(group => group.OrderBy(candidate => candidate.DistanceKm).First())
             .OrderBy(candidate => candidate.DistanceKm)
             .Take(120)
@@ -81,8 +128,9 @@ public static class AiLogisticsEndpoints
                 new
                 {
                     code = "AI.Logistics.NoPortsInsideRadius",
-                    message = $"No existen POL configurados con coordenadas dentro de {radiusKm:0} km del punto de recolección.",
+                    message = $"No existen puertos configurados que puedan resolverse dentro de {radiusKm:0} km del punto de recolección.",
                     maxDistanceKm = radiusKm,
+                    pickupCountry = pickupCountry.Name,
                 }
             );
         }
@@ -90,21 +138,23 @@ public static class AiLogisticsEndpoints
         var candidatesJson = JsonSerializer.Serialize(
             ports.Select(candidate => new
             {
-                id = candidate.Port.Id,
-                name = candidate.Port.Name.Trim(),
-                code = candidate.Port.Code?.Trim(),
-                country = candidate.Port.Country?.Trim(),
-                latitude = candidate.Port.Latitude,
-                longitude = candidate.Port.Longitude,
+                id = candidate.Candidate.Port.Id,
+                name = candidate.Candidate.Port.Name.Trim(),
+                code = candidate.Candidate.Port.Code?.Trim(),
+                country = candidate.Candidate.Port.Country?.Trim(),
+                latitude = candidate.Candidate.Latitude,
+                longitude = candidate.Candidate.Longitude,
                 distanceKm = Math.Round(candidate.DistanceKm, 1),
             })
         );
 
         var systemPrompt = $"""
             Eres un especialista en logística internacional. Debes recomendar únicamente puertos incluidos en la lista de candidatos recibida.
+            El punto de referencia es EXCLUSIVAMENTE la ubicación de recolección marcada por el usuario, no el POL que estuviera seleccionado previamente.
             Todos los candidatos ya fueron filtrados matemáticamente para estar a un máximo de {radiusKm:0} km del punto EXW.
             Usa distancia, viabilidad logística y cercanía para ordenar las opciones. Nunca inventes puertos, IDs ni datos fuera de la lista.
-            Devuelve máximo 3 opciones ordenadas de mejor a peor y conserva la distancia recibida para cada puerto.
+            Devuelve máximo 3 opciones ordenadas de mejor a peor y conserva exactamente la distancia recibida para cada puerto.
+            La interfaz permitirá al usuario cambiar el POL a una de estas opciones; no asumas que el POL actual debe conservarse.
             Responde EXCLUSIVAMENTE JSON válido, sin markdown, con este formato:
             {{"recommendations":[{{"portId":"GUID","distanceKm":123.4,"reason":"explicación breve"}}]}}
             Si no puedes determinar una opción con suficiente confianza, devuelve {{"recommendations":[]}}.
@@ -137,6 +187,121 @@ public static class AiLogisticsEndpoints
         return EndpointResults.FromResult(result, httpContext);
     }
 
+    private static async Task<PickupCountry> ResolvePickupCountryAsync(
+        HttpClient client,
+        decimal latitude,
+        decimal longitude,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            var url = $"reverse?format=jsonv2&addressdetails=1&lat={latitude.ToString(CultureInfo.InvariantCulture)}&lon={longitude.ToString(CultureInfo.InvariantCulture)}";
+            using var response = await client.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode) return PickupCountry.Empty;
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (!document.RootElement.TryGetProperty("address", out var address)) return PickupCountry.Empty;
+
+            var code = address.TryGetProperty("country_code", out var countryCode)
+                ? countryCode.GetString()?.Trim().ToUpperInvariant()
+                : null;
+            var name = address.TryGetProperty("country", out var countryName)
+                ? countryName.GetString()?.Trim()
+                : null;
+
+            return new PickupCountry(code, name);
+        }
+        catch
+        {
+            return PickupCountry.Empty;
+        }
+    }
+
+    private static bool CouldBelongToPickupCountry(
+        NearestPortCandidateRequest port,
+        PickupCountry pickupCountry
+    )
+    {
+        if (string.IsNullOrWhiteSpace(pickupCountry.Code) && string.IsNullOrWhiteSpace(pickupCountry.Name))
+            return true;
+
+        var configuredCountry = port.Country?.Trim();
+        if (!string.IsNullOrWhiteSpace(configuredCountry))
+        {
+            if (!string.IsNullOrWhiteSpace(pickupCountry.Code)
+                && string.Equals(configuredCountry, pickupCountry.Code, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (!string.IsNullOrWhiteSpace(pickupCountry.Name)
+                && Normalize(configuredCountry).Contains(Normalize(pickupCountry.Name)))
+                return true;
+
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(pickupCountry.Name)
+            && Normalize(port.Name).Contains(Normalize(pickupCountry.Name)))
+            return true;
+
+        // Si el catálogo no trae país explícito, todavía se intenta resolver el puerto
+        // restringiendo Nominatim al país de la recolección.
+        return !port.Name.Contains(',', StringComparison.Ordinal);
+    }
+
+    private static async Task<(decimal Latitude, decimal Longitude)?> ResolvePortCoordinatesAsync(
+        HttpClient client,
+        NearestPortCandidateRequest port,
+        PickupCountry pickupCountry,
+        CancellationToken cancellationToken
+    )
+    {
+        var countryFilter = string.IsNullOrWhiteSpace(pickupCountry.Code)
+            ? string.Empty
+            : $"&countrycodes={Uri.EscapeDataString(pickupCountry.Code.ToLowerInvariant())}";
+
+        var queries = new[]
+        {
+            port.Name.Trim(),
+            $"Puerto {port.Name.Trim()}",
+            $"Port {port.Name.Trim()}",
+        }.Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var query in queries)
+        {
+            try
+            {
+                var url = $"search?format=jsonv2&limit=1&addressdetails=1{countryFilter}&q={Uri.EscapeDataString(query)}";
+                using var response = await client.GetAsync(url, cancellationToken);
+                if (!response.IsSuccessStatusCode) continue;
+
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                if (document.RootElement.ValueKind != JsonValueKind.Array
+                    || document.RootElement.GetArrayLength() == 0)
+                    continue;
+
+                var first = document.RootElement[0];
+                if (!first.TryGetProperty("lat", out var latitudeElement)
+                    || !first.TryGetProperty("lon", out var longitudeElement))
+                    continue;
+
+                if (!decimal.TryParse(latitudeElement.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var latitude)
+                    || !decimal.TryParse(longitudeElement.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var longitude))
+                    continue;
+
+                return (latitude, longitude);
+            }
+            catch
+            {
+                // Intenta la siguiente variante del nombre del puerto.
+            }
+        }
+
+        return null;
+    }
+
     private static decimal CalculateDistanceKm(
         decimal latitude1,
         decimal longitude1,
@@ -157,7 +322,24 @@ public static class AiLogisticsEndpoints
         return (decimal)(earthRadiusKm * c);
     }
 
+    private static string Normalize(string value) =>
+        string.Concat(value.Normalize(System.Text.NormalizationForm.FormD)
+            .Where(character => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(character) != System.Globalization.UnicodeCategory.NonSpacingMark))
+            .ToLowerInvariant()
+            .Trim();
+
     private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180d;
+
+    private sealed record PickupCountry(string? Code, string? Name)
+    {
+        public static PickupCountry Empty { get; } = new(null, null);
+    }
+
+    private sealed record ResolvedPortCandidate(
+        NearestPortCandidateRequest Port,
+        decimal Latitude,
+        decimal Longitude
+    );
 
     public sealed record NearestPortsRequest(
         string? PickupAddress,

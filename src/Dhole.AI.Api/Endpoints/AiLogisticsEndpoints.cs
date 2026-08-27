@@ -247,7 +247,7 @@ public static class AiLogisticsEndpoints
 
         // Si el catálogo no trae país explícito, todavía se intenta resolver el puerto
         // restringiendo Nominatim al país de la recolección.
-        return !port.Name.Contains(',', StringComparison.Ordinal);
+        return !port.Name.Contains(',');
     }
 
     private static async Task<(decimal Latitude, decimal Longitude)?> ResolvePortCoordinatesAsync(

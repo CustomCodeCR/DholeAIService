@@ -263,7 +263,7 @@ public static class AiLogisticsEndpoints
             var radiusMeters = Math.Clamp((int)Math.Ceiling(radiusKm * 1000m), 1000, 500000);
             var lat = latitude.ToString(CultureInfo.InvariantCulture);
             var lon = longitude.ToString(CultureInfo.InvariantCulture);
-            var query = $"[out:json][timeout:25];(nwr(around:{radiusMeters},{lat},{lon})[\"industrial\"=\"port\"];nwr(around:{radiusMeters},{lat},{lon})[\"port\"=\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"harbour\"];nwr(around:{radiusMeters},{lat},{lon})[\"seamark:type\"=\"harbour\"];nwr(around:{radiusMeters},{lat},{lon})[\"place\"=\"seaport\"];nwr(around:{radiusMeters},{lat},{lon})[\"seamark:harbour:category\"~\"cargo|container|bulk|tanker|roro\",i];nwr(around:{radiusMeters},{lat},{lon})[\"harbour:category\"~\"general|cargo|container|bulk|tanker|industrial|roro\",i];);out center tags;";
+            var query = $"[out:json][timeout:25];(nwr(around:{radiusMeters},{lat},{lon})[\"industrial\"=\"port\"];nwr(around:{radiusMeters},{lat},{lon})[\"port\"=\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"harbour\"];nwr(around:{radiusMeters},{lat},{lon})[\"landuse\"=\"harbour\"];nwr(around:{radiusMeters},{lat},{lon})[\"seamark:type\"=\"harbour\"];nwr(around:{radiusMeters},{lat},{lon})[\"place\"=\"seaport\"];nwr(around:{radiusMeters},{lat},{lon})[\"seamark:harbour:category\"~\"cargo|container|bulk|tanker|roro\",i];nwr(around:{radiusMeters},{lat},{lon})[\"harbour:category\"~\"general|cargo|container|bulk|tanker|industrial|roro\",i];);out center tags;";
 
             using var body = new FormUrlEncodedContent(new Dictionary<string, string>
             {
@@ -462,6 +462,7 @@ public static class AiLogisticsEndpoints
         var seamarkCategory = ReadString(tags, "seamark:harbour:category")?.ToLowerInvariant();
         var harbourCategory = ReadString(tags, "harbour:category")?.ToLowerInvariant();
         var harbour = ReadString(tags, "harbour")?.ToLowerInvariant();
+        var landuse = ReadString(tags, "landuse")?.ToLowerInvariant();
         var seamarkType = ReadString(tags, "seamark:type")?.ToLowerInvariant();
         var locode = FirstNonEmpty(
             ReadString(tags, "locode"),
@@ -514,6 +515,7 @@ public static class AiLogisticsEndpoints
 
         var maritimeInfrastructure = industrial == "port"
             || harbour == "yes"
+            || landuse == "harbour"
             || seamarkType == "harbour"
             || portType is "seaport" or "deep_water"
             || category == "place" && type == "seaport"

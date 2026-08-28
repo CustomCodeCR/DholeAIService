@@ -1,0 +1,479 @@
+name: Fix modality-aware EXW origin search
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/fix-mode-aware-origin-search-20260827.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch mode-aware geographic search
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/Dhole.AI.Api/Endpoints/AiLogisticsEndpoints.cs')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''        var pickupLatitude = request.Latitude.Value;
+          var pickupLongitude = request.Longitude.Value;
+          var pickupAddress = request.PickupAddress?.Trim();
+          '''
+          new = '''        var pickupLatitude = request.Latitude.Value;
+          var pickupLongitude = request.Longitude.Value;
+          var pickupAddress = request.PickupAddress?.Trim();
+          var transportMode = NormalizeTransportMode(request.TransportMode);
+          '''
+          if old not in text:
+              raise SystemExit('pickup transport mode anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''        var discovered = new List<DiscoveredPort>();
+          discovered.AddRange(await DiscoverPortsWithOverpassAsync(
+              overpass,
+              pickupLatitude,
+              pickupLongitude,
+              radiusKm,
+              cancellationToken
+          ));
+          discovered.AddRange(await DiscoverNamedPortsWithNominatimAsync(
+              nominatim,
+              pickupAddress,
+              pickupLocation,
+              pickupLatitude,
+              pickupLongitude,
+              radiusKm,
+              cancellationToken
+          ));
+          '''
+          new = '''        var discovered = new List<DiscoveredPort>();
+          if (transportMode == "Air")
+          {
+              discovered.AddRange(await DiscoverAirportsWithOverpassAsync(
+                  overpass,
+                  pickupLatitude,
+                  pickupLongitude,
+                  radiusKm,
+                  cancellationToken
+              ));
+          }
+          else if (transportMode == "Land")
+          {
+              discovered.AddRange(await DiscoverLandNodesWithOverpassAsync(
+                  overpass,
+                  pickupLatitude,
+                  pickupLongitude,
+                  radiusKm,
+                  cancellationToken
+              ));
+          }
+          else
+          {
+              discovered.AddRange(await DiscoverPortsWithOverpassAsync(
+                  overpass,
+                  pickupLatitude,
+                  pickupLongitude,
+                  radiusKm,
+                  cancellationToken
+              ));
+          }
+
+          discovered.AddRange(await DiscoverNamedPortsWithNominatimAsync(
+              nominatim,
+              pickupAddress,
+              pickupLocation,
+              pickupLatitude,
+              pickupLongitude,
+              radiusKm,
+              transportMode,
+              cancellationToken
+          ));
+          '''
+          if old not in text:
+              raise SystemExit('discovery block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''                content = "{\\"recommendations\\":[]}",
+                  maxDistanceKm = radiusKm,
+                  pickup = new
+          '''
+          new = '''                content = "{\\"recommendations\\":[]}",
+                  maxDistanceKm = radiusKm,
+                  transportMode,
+                  pickup = new
+          '''
+          if old not in text:
+              raise SystemExit('empty response block not found')
+          text = text.replace(old, new, 1)
+
+          prompt_start = text.index('        var systemPrompt = string.Join(')
+          prompt_end = text.index('        var locationText = string.Join(', prompt_start)
+          new_prompt = '''        var transportLabel = transportMode switch
+          {
+              "Air" => "aeropuertos de carga o aeropuertos comerciales aptos para carga aérea",
+              "Land" => "terminales o nodos logísticos terrestres",
+              _ => "puertos marítimos comerciales",
+          };
+          var exampleName = transportMode switch
+          {
+              "Air" => "Juan Santamaría International Airport",
+              "Land" => "Terminal logística",
+              _ => "Qingdao Port",
+          };
+
+          var systemPrompt = string.Join(
+              '\\n',
+              $"Eres un especialista en logística internacional y selección de {transportLabel}.",
+              $"La modalidad seleccionada es {transportMode}. Solo puedes recomendar candidatos compatibles con esa modalidad.",
+              "La búsqueda se originó EXCLUSIVAMENTE desde las coordenadas de recolección indicadas por el usuario. No uses ni infieras el POL actual para calcular cercanía.",
+              $"Los candidatos fueron descubiertos geográficamente alrededor de la recolección y filtrados matemáticamente a un radio máximo de {radiusKm:0} km.",
+              "El catálogo POL de Dhole NO limita la búsqueda. Solo sirve después para detectar si un candidato ya está configurado.",
+              "No confundas nombres de ciudades, barrios, comercios o lugares que contengan palabras como Puerto/Port con infraestructura logística real.",
+              "Nunca inventes un punto que no esté en la lista de candidatos y nunca cambies el tipo de infraestructura del candidato.",
+              "Devuelve hasta 5 opciones, ordenadas de mejor a peor. Conserva exactamente nombre, código, latitud, longitud y distancia del candidato elegido.",
+              "Responde EXCLUSIVAMENTE JSON válido, sin markdown, con este formato:",
+              $"{{\\"recommendations\\":[{{\\"name\\":\\"{exampleName}\\",\\"code\\":null,\\"latitude\\":36.0,\\"longitude\\":120.2,\\"distanceKm\\":12.3,\\"reason\\":\\"explicación breve\\"}}]}}",
+              "Si no hay una opción útil, devuelve {\\"recommendations\\":[]} ."
+          );
+
+          '''
+          text = text[:prompt_start] + new_prompt + text[prompt_end:]
+
+          old = '''                $"Lugar de recolección: {locationText}\\nRadio máximo: {radiusKm:0} km\\nPuertos geográficos encontrados: {candidatesJson}"
+          '''
+          new = '''                $"Lugar de recolección: {locationText}\\nModalidad: {transportMode}\\nRadio máximo: {radiusKm:0} km\\nCandidatos geográficos compatibles: {candidatesJson}"
+          '''
+          if old not in text:
+              raise SystemExit('AI user message anchor not found')
+          text = text.replace(old, new, 1)
+
+          method_start = text.index('    private static async Task<IReadOnlyCollection<DiscoveredPort>> DiscoverNamedPortsWithNominatimAsync(')
+          method_end = text.index('    private static bool TryReadCoordinates(', method_start)
+          replacement = r'''    private static async Task<IReadOnlyCollection<DiscoveredPort>> DiscoverAirportsWithOverpassAsync(
+              HttpClient client,
+              decimal latitude,
+              decimal longitude,
+              decimal radiusKm,
+              CancellationToken cancellationToken
+          )
+          {
+              try
+              {
+                  var radiusMeters = Math.Clamp((int)Math.Ceiling(radiusKm * 1000m), 1000, 500000);
+                  var lat = latitude.ToString(CultureInfo.InvariantCulture);
+                  var lon = longitude.ToString(CultureInfo.InvariantCulture);
+                  var query = $"[out:json][timeout:25];(nwr(around:{radiusMeters},{lat},{lon})[\"aeroway\"=\"aerodrome\"];);out center tags;";
+
+                  using var body = new FormUrlEncodedContent(new Dictionary<string, string> { ["data"] = query });
+                  using var response = await client.PostAsync("interpreter", body, cancellationToken);
+                  if (!response.IsSuccessStatusCode) return Array.Empty<DiscoveredPort>();
+
+                  await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                  using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                  if (!document.RootElement.TryGetProperty("elements", out var elements)
+                      || elements.ValueKind != JsonValueKind.Array)
+                  {
+                      return Array.Empty<DiscoveredPort>();
+                  }
+
+                  var airports = new List<DiscoveredPort>();
+                  foreach (var element in elements.EnumerateArray())
+                  {
+                      if (!TryReadCoordinates(element, out var nodeLatitude, out var nodeLongitude)) continue;
+                      if (!element.TryGetProperty("tags", out var tags)) continue;
+
+                      var name = FirstNonEmpty(
+                          ReadString(tags, "name:en"),
+                          ReadString(tags, "name"),
+                          ReadString(tags, "official_name"),
+                          ReadString(tags, "operator")
+                      );
+                      if (string.IsNullOrWhiteSpace(name)) continue;
+
+                      airports.Add(new DiscoveredPort(
+                          name,
+                          FirstNonEmpty(ReadString(tags, "iata"), ReadString(tags, "icao"), ReadString(tags, "ref")),
+                          ReadString(tags, "addr:country"),
+                          nodeLatitude,
+                          nodeLongitude,
+                          "OpenStreetMap/Overpass"
+                      ));
+                  }
+
+                  return airports;
+              }
+              catch
+              {
+                  return Array.Empty<DiscoveredPort>();
+              }
+          }
+
+          private static async Task<IReadOnlyCollection<DiscoveredPort>> DiscoverLandNodesWithOverpassAsync(
+              HttpClient client,
+              decimal latitude,
+              decimal longitude,
+              decimal radiusKm,
+              CancellationToken cancellationToken
+          )
+          {
+              try
+              {
+                  var radiusMeters = Math.Clamp((int)Math.Ceiling(radiusKm * 1000m), 1000, 500000);
+                  var lat = latitude.ToString(CultureInfo.InvariantCulture);
+                  var lon = longitude.ToString(CultureInfo.InvariantCulture);
+                  var query = $"[out:json][timeout:25];(nwr(around:{radiusMeters},{lat},{lon})[\"railway\"=\"freight_terminal\"];nwr(around:{radiusMeters},{lat},{lon})[\"industrial\"=\"logistics\"];nwr(around:{radiusMeters},{lat},{lon})[\"amenity\"=\"truck_stop\"];);out center tags;";
+
+                  using var body = new FormUrlEncodedContent(new Dictionary<string, string> { ["data"] = query });
+                  using var response = await client.PostAsync("interpreter", body, cancellationToken);
+                  if (!response.IsSuccessStatusCode) return Array.Empty<DiscoveredPort>();
+
+                  await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                  using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                  if (!document.RootElement.TryGetProperty("elements", out var elements)
+                      || elements.ValueKind != JsonValueKind.Array)
+                  {
+                      return Array.Empty<DiscoveredPort>();
+                  }
+
+                  var nodes = new List<DiscoveredPort>();
+                  foreach (var element in elements.EnumerateArray())
+                  {
+                      if (!TryReadCoordinates(element, out var nodeLatitude, out var nodeLongitude)) continue;
+                      if (!element.TryGetProperty("tags", out var tags)) continue;
+
+                      var name = FirstNonEmpty(
+                          ReadString(tags, "name:en"),
+                          ReadString(tags, "name"),
+                          ReadString(tags, "official_name"),
+                          ReadString(tags, "operator")
+                      );
+                      if (string.IsNullOrWhiteSpace(name)) continue;
+
+                      nodes.Add(new DiscoveredPort(
+                          name,
+                          ReadString(tags, "ref"),
+                          ReadString(tags, "addr:country"),
+                          nodeLatitude,
+                          nodeLongitude,
+                          "OpenStreetMap/Overpass"
+                      ));
+                  }
+
+                  return nodes;
+              }
+              catch
+              {
+                  return Array.Empty<DiscoveredPort>();
+              }
+          }
+
+          private static async Task<IReadOnlyCollection<DiscoveredPort>> DiscoverNamedPortsWithNominatimAsync(
+              HttpClient client,
+              string? pickupAddress,
+              PickupLocation location,
+              decimal pickupLatitude,
+              decimal pickupLongitude,
+              decimal radiusKm,
+              string transportMode,
+              CancellationToken cancellationToken
+          )
+          {
+              var addressLocality = pickupAddress?
+                  .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                  .FirstOrDefault();
+              var localities = new[] { location.Locality, addressLocality }
+                  .Where(value => !string.IsNullOrWhiteSpace(value))
+                  .Select(value => value!.Trim())
+                  .Distinct(StringComparer.OrdinalIgnoreCase)
+                  .Take(2)
+                  .ToArray();
+
+              if (localities.Length == 0 || transportMode == "Land") return Array.Empty<DiscoveredPort>();
+
+              var countryFilter = string.IsNullOrWhiteSpace(location.CountryCode)
+                  ? string.Empty
+                  : $"&countrycodes={Uri.EscapeDataString(location.CountryCode.ToLowerInvariant())}";
+              var results = new List<DiscoveredPort>();
+
+              foreach (var locality in localities)
+              {
+                  var queries = transportMode == "Air"
+                      ? new[]
+                      {
+                          $"{locality} International Airport",
+                          $"{locality} Airport",
+                          $"Airport {locality}",
+                          $"Aeropuerto {locality}",
+                      }
+                      : new[]
+                      {
+                          $"Port of {locality}",
+                          $"{locality} Port",
+                          $"{locality} Harbor",
+                          $"{locality} Harbour",
+                          $"Puerto {locality}",
+                      };
+
+                  foreach (var query in queries.Distinct(StringComparer.OrdinalIgnoreCase))
+                  {
+                      try
+                      {
+                          var url = $"search?format=jsonv2&limit=5&addressdetails=1&extratags=1{countryFilter}&q={Uri.EscapeDataString(query)}";
+                          using var response = await client.GetAsync(url, cancellationToken);
+                          if (!response.IsSuccessStatusCode) continue;
+
+                          await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                          using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                          if (document.RootElement.ValueKind != JsonValueKind.Array) continue;
+
+                          foreach (var row in document.RootElement.EnumerateArray())
+                          {
+                              if (!IsNominatimCandidateForMode(row, transportMode)) continue;
+                              if (!TryParseCoordinate(row, "lat", out var latitude)
+                                  || !TryParseCoordinate(row, "lon", out var longitude))
+                              {
+                                  continue;
+                              }
+
+                              var distance = CalculateDistanceKm(
+                                  pickupLatitude,
+                                  pickupLongitude,
+                                  latitude,
+                                  longitude
+                              );
+                              if (distance > radiusKm) continue;
+
+                              var name = FirstNonEmpty(
+                                  ReadString(row, "name"),
+                                  ReadString(row, "display_name")?.Split(',').FirstOrDefault()
+                              );
+                              if (string.IsNullOrWhiteSpace(name)) continue;
+
+                              var country = row.TryGetProperty("address", out var address)
+                                  ? ReadString(address, "country")
+                                  : location.Country;
+                              var code = ReadNominatimTransportCode(row, transportMode);
+
+                              results.Add(new DiscoveredPort(
+                                  name,
+                                  code,
+                                  country,
+                                  latitude,
+                                  longitude,
+                                  "OpenStreetMap/Nominatim"
+                              ));
+                          }
+                      }
+                      catch
+                      {
+                          // Continúa con la siguiente variante de búsqueda.
+                      }
+                  }
+              }
+
+              return results;
+          }
+
+          private static bool IsNominatimCandidateForMode(JsonElement row, string transportMode)
+          {
+              var category = FirstNonEmpty(ReadString(row, "category"), ReadString(row, "class"))?.ToLowerInvariant();
+              var type = ReadString(row, "type")?.ToLowerInvariant();
+              var name = FirstNonEmpty(ReadString(row, "name"), ReadString(row, "display_name")) ?? string.Empty;
+              var normalizedName = Normalize(name);
+
+              JsonElement extraTags = default;
+              var hasExtraTags = row.TryGetProperty("extratags", out extraTags)
+                  && extraTags.ValueKind == JsonValueKind.Object;
+              var industrial = hasExtraTags ? ReadString(extraTags, "industrial")?.ToLowerInvariant() : null;
+              var harbour = hasExtraTags ? ReadString(extraTags, "harbour")?.ToLowerInvariant() : null;
+              var seamarkType = hasExtraTags ? ReadString(extraTags, "seamark:type")?.ToLowerInvariant() : null;
+
+              if (transportMode == "Air")
+              {
+                  return category == "aeroway" && (type == "aerodrome" || type == "airport");
+              }
+
+              if (transportMode == "Land")
+              {
+                  return (category == "railway" && type == "freight_terminal")
+                      || industrial == "logistics";
+              }
+
+              var nameLooksMaritime = normalizedName.Contains(" port")
+                  || normalizedName.StartsWith("port ")
+                  || normalizedName.Contains("puerto")
+                  || normalizedName.Contains("harbour")
+                  || normalizedName.Contains("harbor");
+
+              return industrial == "port"
+                  || !string.IsNullOrWhiteSpace(harbour)
+                  || seamarkType == "harbour"
+                  || (category == "place" && type == "seaport")
+                  || (category == "waterway" && type == "dock")
+                  || (category == "landuse" && type == "industrial" && nameLooksMaritime);
+          }
+
+          private static string? ReadNominatimTransportCode(JsonElement row, string transportMode)
+          {
+              if (!row.TryGetProperty("extratags", out var extraTags)
+                  || extraTags.ValueKind != JsonValueKind.Object)
+              {
+                  return null;
+              }
+
+              return transportMode == "Air"
+                  ? FirstNonEmpty(ReadString(extraTags, "iata"), ReadString(extraTags, "icao"), ReadString(extraTags, "ref"))
+                  : FirstNonEmpty(ReadString(extraTags, "locode"), ReadString(extraTags, "ref"));
+          }
+
+          '''
+          text = text[:method_start] + replacement + text[method_end:]
+
+          marker = '    private static decimal CalculateDistanceKm(\n'
+          helper = '''    private static string NormalizeTransportMode(string? value)\n    {\n        var normalized = NormalizeOptional(value)?.ToLowerInvariant();\n        return normalized switch\n        {\n            "air" or "aereo" or "aéreo" => "Air",\n            "land" or "terrestre" => "Land",\n            "multimodal" => "Multimodal",\n            _ => "Maritime",\n        };\n    }\n\n'''
+          if marker not in text:
+              raise SystemExit('distance marker not found')
+          text = text.replace(marker, helper + marker, 1)
+
+          old = '''    public sealed record NearestPortsRequest(
+              string? PickupAddress,
+              decimal? Latitude,
+              decimal? Longitude,
+              decimal? MaxDistanceKm = MaximumAllowedRadiusKm
+          );
+          '''
+          new = '''    public sealed record NearestPortsRequest(
+              string? PickupAddress,
+              decimal? Latitude,
+              decimal? Longitude,
+              decimal? MaxDistanceKm = MaximumAllowedRadiusKm,
+              string? TransportMode = "Maritime"
+          );
+          '''
+          if old not in text:
+              raise SystemExit('request record anchor not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          print('Mode-aware EXW geographic search patched.')
+          PY
+      - name: Commit patch and clean temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/fix-mode-aware-origin-search-20260827.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(ai): enforce transport-specific EXW nodes'
+          git push origin HEAD:master

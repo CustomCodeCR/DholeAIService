@@ -167,7 +167,7 @@ public static class AiLogisticsEndpoints
             transportMode is "Maritime" or "Multimodal"
                 ? "Si no puedes justificar que un candidato sirve para transporte marítimo internacional de carga, NO lo recomiendes."
                 : "No recomiendes infraestructura de otra modalidad.",
-            "Devuelve hasta 5 opciones, ordenadas de mejor a peor. Conserva exactamente nombre, código, latitud, longitud y distancia del candidato elegido.",
+            "Devuelve TODAS las opciones válidas de carga internacional que estén en los candidatos, hasta un máximo de 5. No omitas un puerto válido solo por preferir otro. Ordénalas estrictamente por distanceKm de menor a mayor. Conserva exactamente nombre, código, latitud, longitud y distancia del candidato elegido.",
             "Responde EXCLUSIVAMENTE JSON válido, sin markdown, con este formato:",
             "{\"recommendations\":[{\"name\":\"Qingdao Port\",\"code\":null,\"latitude\":36.0,\"longitude\":120.2,\"distanceKm\":12.3,\"reason\":\"explicación breve\"}]}",
             "Si no hay una opción útil, devuelve {\"recommendations\":[]} ."
@@ -263,7 +263,7 @@ public static class AiLogisticsEndpoints
             var radiusMeters = Math.Clamp((int)Math.Ceiling(radiusKm * 1000m), 1000, 500000);
             var lat = latitude.ToString(CultureInfo.InvariantCulture);
             var lon = longitude.ToString(CultureInfo.InvariantCulture);
-            var query = $"[out:json][timeout:25];(nwr(around:{radiusMeters},{lat},{lon})[\"industrial\"=\"port\"];nwr(around:{radiusMeters},{lat},{lon})[\"port\"=\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"seamark:harbour:category\"~\"cargo|container|bulk|tanker|roro\",i];nwr(around:{radiusMeters},{lat},{lon})[\"harbour:category\"~\"general|cargo|container|bulk|tanker|industrial|roro\",i];);out center tags;";
+            var query = $"[out:json][timeout:25];(nwr(around:{radiusMeters},{lat},{lon})[\"industrial\"=\"port\"];nwr(around:{radiusMeters},{lat},{lon})[\"port\"=\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"harbour\"];nwr(around:{radiusMeters},{lat},{lon})[\"seamark:type\"=\"harbour\"];nwr(around:{radiusMeters},{lat},{lon})[\"place\"=\"seaport\"];nwr(around:{radiusMeters},{lat},{lon})[\"seamark:harbour:category\"~\"cargo|container|bulk|tanker|roro\",i];nwr(around:{radiusMeters},{lat},{lon})[\"harbour:category\"~\"general|cargo|container|bulk|tanker|industrial|roro\",i];);out center tags;";
 
             using var body = new FormUrlEncodedContent(new Dictionary<string, string>
             {
@@ -328,11 +328,11 @@ public static class AiLogisticsEndpoints
         var addressLocality = pickupAddress?
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .FirstOrDefault();
-        var localities = new[] { location.Locality, addressLocality }
+        var localities = new[] { location.Locality, addressLocality, location.Region, location.Country }
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value!.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(2)
+            .Take(4)
             .ToArray();
 
         if (localities.Length == 0 || transportMode == "Land") return Array.Empty<DiscoveredPort>();
@@ -390,7 +390,15 @@ public static class AiLogisticsEndpoints
                         else
                         {
                             var displayName = FirstNonEmpty(ReadString(row, "name"), ReadString(row, "display_name")) ?? string.Empty;
-                            if (!hasExtraTags || !IsInternationalCargoPort(extraTags, displayName, category, type)) continue;
+                            var explicitSeaport = category == "place" && type == "seaport";
+                            if (hasExtraTags)
+                            {
+                                if (!IsInternationalCargoPort(extraTags, displayName, category, type)) continue;
+                            }
+                            else if (!explicitSeaport)
+                            {
+                                continue;
+                            }
                         }
                         if (!TryParseCoordinate(row, "lat", out var latitude)
                             || !TryParseCoordinate(row, "lon", out var longitude))
@@ -504,15 +512,19 @@ public static class AiLogisticsEndpoints
         if (clearlyNonCargo) return false;
         if (explicitCargo) return true;
 
-        var commercialSeaport = industrial == "port"
-            && (portType is "seaport" or "deep_water"
-                || !string.IsNullOrWhiteSpace(locode)
-                || harbour == "yes"
-                || seamarkType == "harbour"
-                || category == "place" && type == "seaport"
-                || ContainsAny(normalizedName, "container terminal", "cargo terminal", "commercial port", "commercial seaport", "puerto comercial", "puerto de carga"));
+        var maritimeInfrastructure = industrial == "port"
+            || harbour == "yes"
+            || seamarkType == "harbour"
+            || portType is "seaport" or "deep_water"
+            || category == "place" && type == "seaport"
+            || type == "seaport"
+            || ContainsAny(normalizedName, "container terminal", "cargo terminal", "commercial port", "commercial seaport", "puerto comercial", "puerto de carga");
 
-        return commercialSeaport || industrial == "port";
+        if (!maritimeInfrastructure) return false;
+
+        // Discovery must not depend on complete OSM cargo subtags. Real international ports
+        // can be tagged only as harbour/seaport. The AI performs the final cargo validation.
+        return true;
     }
 
     private static bool TryReadCoordinates(

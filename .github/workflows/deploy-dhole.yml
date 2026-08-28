@@ -1,5 +1,5 @@
 name: Deploy Dhole AI
-# Modality-aware EXW origins release — 2026-08-27
+# International cargo port filtering release — 2026-08-27
 
 on:
   push:

@@ -151,7 +151,7 @@ public static class AiLogisticsEndpoints
             ? "aeropuertos reales aptos para carga aérea"
             : transportMode == "Land"
                 ? "nodos logísticos terrestres"
-                : "puertos marítimos comerciales reales";
+                : "puertos marítimos comerciales de carga internacional";
 
         var systemPrompt = string.Join(
             '\n',
@@ -161,6 +161,12 @@ public static class AiLogisticsEndpoints
             $"Los candidatos fueron descubiertos geográficamente alrededor de la recolección y filtrados matemáticamente a un radio máximo de {radiusKm:0} km.",
             "El catálogo POL de Dhole NO limita la búsqueda. Debes evaluar los puertos geográficos recibidos por distancia y viabilidad logística.",
             "Nunca inventes un punto que no esté en la lista de candidatos y no confundas nombres de ciudades, barrios o comercios con infraestructura logística real.",
+            transportMode is "Maritime" or "Multimodal"
+                ? "Para marítimo solo son válidos puertos comerciales que realmente manejen carga internacional: contenedores, carga general, graneles, RoRo de carga o terminales tanker. Excluye marinas, pesca, ferris o terminales solo de pasajeros, cruceros, muelles locales, astilleros, bases navales y puertos sin operación internacional de carga."
+                : "Mantén estrictamente la infraestructura compatible con la modalidad seleccionada.",
+            transportMode is "Maritime" or "Multimodal"
+                ? "Si no puedes justificar que un candidato sirve para transporte marítimo internacional de carga, NO lo recomiendes."
+                : "No recomiendes infraestructura de otra modalidad.",
             "Devuelve hasta 5 opciones, ordenadas de mejor a peor. Conserva exactamente nombre, código, latitud, longitud y distancia del candidato elegido.",
             "Responde EXCLUSIVAMENTE JSON válido, sin markdown, con este formato:",
             "{\"recommendations\":[{\"name\":\"Qingdao Port\",\"code\":null,\"latitude\":36.0,\"longitude\":120.2,\"distanceKm\":12.3,\"reason\":\"explicación breve\"}]}",
@@ -257,7 +263,7 @@ public static class AiLogisticsEndpoints
             var radiusMeters = Math.Clamp((int)Math.Ceiling(radiusKm * 1000m), 1000, 500000);
             var lat = latitude.ToString(CultureInfo.InvariantCulture);
             var lon = longitude.ToString(CultureInfo.InvariantCulture);
-            var query = $"[out:json][timeout:25];(nwr(around:{radiusMeters},{lat},{lon})[\"industrial\"=\"port\"];nwr(around:{radiusMeters},{lat},{lon})[\"harbour\"];nwr(around:{radiusMeters},{lat},{lon})[\"seamark:type\"=\"harbour\"];);out center tags;";
+            var query = $"[out:json][timeout:25];(nwr(around:{radiusMeters},{lat},{lon})[\"industrial\"=\"port\"];nwr(around:{radiusMeters},{lat},{lon})[\"port\"=\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"cargo\"];nwr(around:{radiusMeters},{lat},{lon})[\"seamark:harbour:category\"~\"cargo|container|bulk|tanker|roro\",i];nwr(around:{radiusMeters},{lat},{lon})[\"harbour:category\"~\"general|cargo|container|bulk|tanker|industrial|roro\",i];);out center tags;";
 
             using var body = new FormUrlEncodedContent(new Dictionary<string, string>
             {
@@ -288,10 +294,11 @@ public static class AiLogisticsEndpoints
                     ReadString(tags, "operator")
                 );
                 if (string.IsNullOrWhiteSpace(name)) continue;
+                if (!IsInternationalCargoPort(tags, name)) continue;
 
                 ports.Add(new DiscoveredPort(
                     name,
-                    FirstNonEmpty(ReadString(tags, "locode"), ReadString(tags, "ref")),
+                    FirstNonEmpty(ReadString(tags, "locode"), ReadString(tags, "seamark:harbour:locode"), ReadString(tags, "ref")),
                     ReadString(tags, "addr:country"),
                     portLatitude,
                     portLongitude,
@@ -347,11 +354,11 @@ public static class AiLogisticsEndpoints
                 }
                 : new[]
                 {
-                    $"Port of {locality}",
-                    $"{locality} Port",
-                    $"{locality} Harbor",
-                    $"{locality} Harbour",
-                    $"Puerto {locality}",
+                    $"{locality} cargo port",
+                    $"{locality} container terminal",
+                    $"{locality} commercial seaport",
+                    $"Port of {locality} cargo",
+                    $"Puerto de carga {locality}",
                 };
 
             foreach (var query in queries)
@@ -383,15 +390,7 @@ public static class AiLogisticsEndpoints
                         else
                         {
                             var displayName = FirstNonEmpty(ReadString(row, "name"), ReadString(row, "display_name")) ?? string.Empty;
-                            var normalizedName = Normalize(displayName);
-                            var nameLooksMaritime = normalizedName.Contains("port") || normalizedName.Contains("puerto") || normalizedName.Contains("harbour") || normalizedName.Contains("harbor");
-                            var isMaritime = industrial == "port"
-                                || !string.IsNullOrWhiteSpace(harbour)
-                                || seamarkType == "harbour"
-                                || (category == "place" && type == "seaport")
-                                || (category == "waterway" && type == "dock")
-                                || (category == "landuse" && type == "industrial" && nameLooksMaritime);
-                            if (!isMaritime) continue;
+                            if (!hasExtraTags || !IsInternationalCargoPort(extraTags, displayName, category, type)) continue;
                         }
                         if (!TryParseCoordinate(row, "lat", out var latitude)
                             || !TryParseCoordinate(row, "lon", out var longitude))
@@ -422,7 +421,7 @@ public static class AiLogisticsEndpoints
                             hasExtraTags
                                 ? transportMode == "Air"
                                     ? FirstNonEmpty(ReadString(extraTags, "iata"), ReadString(extraTags, "icao"), ReadString(extraTags, "ref"))
-                                    : FirstNonEmpty(ReadString(extraTags, "locode"), ReadString(extraTags, "ref"))
+                                    : FirstNonEmpty(ReadString(extraTags, "locode"), ReadString(extraTags, "seamark:harbour:locode"), ReadString(extraTags, "ref"))
                                 : null,
                             country,
                             latitude,
@@ -439,6 +438,81 @@ public static class AiLogisticsEndpoints
         }
 
         return results;
+    }
+
+    private static bool IsInternationalCargoPort(
+        JsonElement tags,
+        string name,
+        string? category = null,
+        string? type = null
+    )
+    {
+        var industrial = ReadString(tags, "industrial")?.ToLowerInvariant();
+        var port = ReadString(tags, "port")?.ToLowerInvariant();
+        var portType = ReadString(tags, "port:type")?.ToLowerInvariant();
+        var cargo = ReadString(tags, "cargo")?.ToLowerInvariant();
+        var seamarkCategory = ReadString(tags, "seamark:harbour:category")?.ToLowerInvariant();
+        var harbourCategory = ReadString(tags, "harbour:category")?.ToLowerInvariant();
+        var harbour = ReadString(tags, "harbour")?.ToLowerInvariant();
+        var seamarkType = ReadString(tags, "seamark:type")?.ToLowerInvariant();
+        var locode = FirstNonEmpty(
+            ReadString(tags, "locode"),
+            ReadString(tags, "seamark:harbour:locode")
+        );
+        var leisure = ReadString(tags, "leisure")?.ToLowerInvariant();
+        var military = ReadString(tags, "military")?.ToLowerInvariant();
+        var normalizedName = Normalize(name);
+
+        static bool ContainsAny(string? value, params string[] tokens)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            return tokens.Any(token => value.Contains(token, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var hasCargoSubtag = false;
+        if (tags.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in tags.EnumerateObject())
+            {
+                if (!property.Name.StartsWith("cargo:", StringComparison.OrdinalIgnoreCase)) continue;
+                var value = property.Value.ValueKind == JsonValueKind.String
+                    ? property.Value.GetString()
+                    : null;
+                if (!string.Equals(value, "no", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasCargoSubtag = true;
+                    break;
+                }
+            }
+        }
+
+        var explicitCargo = port == "cargo"
+            || (!string.IsNullOrWhiteSpace(cargo)
+                && cargo is not "no" and not "passenger")
+            || hasCargoSubtag
+            || ContainsAny(seamarkCategory, "cargo", "container", "bulk", "tanker", "roro")
+            || ContainsAny(harbourCategory, "general", "cargo", "container", "bulk", "tanker", "industrial", "roro");
+
+        var clearlyNonCargo = leisure == "marina"
+            || !string.IsNullOrWhiteSpace(military)
+            || ContainsAny(port, "fishing", "passenger", "marina", "seaplane")
+            || (!explicitCargo && ContainsAny(seamarkCategory, "fishing", "marina", "naval", "passenger", "shipyard", "ferry", "port_support"))
+            || (!explicitCargo && ContainsAny(harbourCategory, "fishing", "marina", "military", "passenger", "shipyard", "ferry", "tourism", "yacht"))
+            || (!explicitCargo && ContainsAny(normalizedName, "marina", "yacht", "fishing", "ferry terminal", "cruise terminal", "naval base", "shipyard"));
+
+        if (clearlyNonCargo) return false;
+        if (explicitCargo) return true;
+
+        var commercialSeaport = industrial == "port"
+            && (portType is "seaport" or "deep_water"
+                || !string.IsNullOrWhiteSpace(locode)
+                || harbour == "yes"
+                || seamarkType == "harbour"
+                || category == "place" && type == "seaport"
+                || ContainsAny(normalizedName, "container terminal", "cargo terminal", "commercial port", "commercial seaport", "puerto comercial", "puerto de carga"));
+
+        return commercialSeaport || industrial == "port";
     }
 
     private static bool TryReadCoordinates(

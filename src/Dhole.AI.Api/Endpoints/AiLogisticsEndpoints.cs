@@ -56,6 +56,7 @@ public static class AiLogisticsEndpoints
         var pickupLatitude = request.Latitude.Value;
         var pickupLongitude = request.Longitude.Value;
         var pickupAddress = request.PickupAddress?.Trim();
+        var transportMode = NormalizeTransportMode(request.TransportMode);
 
         var nominatim = httpClientFactory.CreateClient("nominatim");
         var overpass = httpClientFactory.CreateClient("overpass");
@@ -67,13 +68,17 @@ public static class AiLogisticsEndpoints
         );
 
         var discovered = new List<DiscoveredPort>();
-        discovered.AddRange(await DiscoverPortsWithOverpassAsync(
-            overpass,
-            pickupLatitude,
-            pickupLongitude,
-            radiusKm,
-            cancellationToken
-        ));
+        if (transportMode is not "Air" and not "Land")
+        {
+            discovered.AddRange(await DiscoverPortsWithOverpassAsync(
+                overpass,
+                pickupLatitude,
+                pickupLongitude,
+                radiusKm,
+                cancellationToken
+            ));
+        }
+
         discovered.AddRange(await DiscoverNamedPortsWithNominatimAsync(
             nominatim,
             pickupAddress,
@@ -81,9 +86,9 @@ public static class AiLogisticsEndpoints
             pickupLatitude,
             pickupLongitude,
             radiusKm,
+            transportMode,
             cancellationToken
         ));
-
         var candidates = discovered
             .Where(port => !string.IsNullOrWhiteSpace(port.Name))
             .Select(port => new PortCandidate(
@@ -118,6 +123,7 @@ public static class AiLogisticsEndpoints
             {
                 content = "{\"recommendations\":[]}",
                 maxDistanceKm = radiusKm,
+                transportMode,
                 pickup = new
                 {
                     latitude = pickupLatitude,
@@ -141,13 +147,20 @@ public static class AiLogisticsEndpoints
             })
         );
 
+        var transportDescription = transportMode == "Air"
+            ? "aeropuertos reales aptos para carga aérea"
+            : transportMode == "Land"
+                ? "nodos logísticos terrestres"
+                : "puertos marítimos comerciales reales";
+
         var systemPrompt = string.Join(
             '\n',
-            "Eres un especialista en logística internacional y selección de puertos marítimos.",
+            $"Eres un especialista en logística internacional y selección de {transportDescription}.",
+            $"La modalidad seleccionada es {transportMode}. Solo recomienda infraestructura compatible con esa modalidad.",
             "La búsqueda se originó EXCLUSIVAMENTE desde las coordenadas de recolección indicadas por el usuario. No uses ni infieras el POL actual para calcular cercanía.",
             $"Los candidatos fueron descubiertos geográficamente alrededor de la recolección y filtrados matemáticamente a un radio máximo de {radiusKm:0} km.",
             "El catálogo POL de Dhole NO limita la búsqueda. Debes evaluar los puertos geográficos recibidos por distancia y viabilidad logística.",
-            "Nunca inventes un puerto que no esté en la lista de candidatos.",
+            "Nunca inventes un punto que no esté en la lista de candidatos y no confundas nombres de ciudades, barrios o comercios con infraestructura logística real.",
             "Devuelve hasta 5 opciones, ordenadas de mejor a peor. Conserva exactamente nombre, código, latitud, longitud y distancia del candidato elegido.",
             "Responde EXCLUSIVAMENTE JSON válido, sin markdown, con este formato:",
             "{\"recommendations\":[{\"name\":\"Qingdao Port\",\"code\":null,\"latitude\":36.0,\"longitude\":120.2,\"distanceKm\":12.3,\"reason\":\"explicación breve\"}]}",
@@ -171,7 +184,7 @@ public static class AiLogisticsEndpoints
             new AiMessageRequest("system", systemPrompt),
             new AiMessageRequest(
                 "user",
-                $"Lugar de recolección: {locationText}\nRadio máximo: {radiusKm:0} km\nPuertos geográficos encontrados: {candidatesJson}"
+                $"Lugar de recolección: {locationText}\nModalidad: {transportMode}\nRadio máximo: {radiusKm:0} km\nCandidatos geográficos compatibles: {candidatesJson}"
             ),
         };
 
@@ -301,6 +314,7 @@ public static class AiLogisticsEndpoints
         decimal pickupLatitude,
         decimal pickupLongitude,
         decimal radiusKm,
+        string transportMode,
         CancellationToken cancellationToken
     )
     {
@@ -314,7 +328,7 @@ public static class AiLogisticsEndpoints
             .Take(2)
             .ToArray();
 
-        if (localities.Length == 0) return Array.Empty<DiscoveredPort>();
+        if (localities.Length == 0 || transportMode == "Land") return Array.Empty<DiscoveredPort>();
 
         var countryFilter = string.IsNullOrWhiteSpace(location.CountryCode)
             ? string.Empty
@@ -323,20 +337,28 @@ public static class AiLogisticsEndpoints
 
         foreach (var locality in localities)
         {
-            var queries = new[]
-            {
-                $"Port of {locality}",
-                $"{locality} Port",
-                $"{locality} Harbor",
-                $"{locality} Harbour",
-                $"Puerto {locality}",
-            }.Distinct(StringComparer.OrdinalIgnoreCase);
+            var queries = transportMode == "Air"
+                ? new[]
+                {
+                    $"{locality} International Airport",
+                    $"{locality} Airport",
+                    $"Airport {locality}",
+                    $"Aeropuerto {locality}",
+                }
+                : new[]
+                {
+                    $"Port of {locality}",
+                    $"{locality} Port",
+                    $"{locality} Harbor",
+                    $"{locality} Harbour",
+                    $"Puerto {locality}",
+                };
 
             foreach (var query in queries)
             {
                 try
                 {
-                    var url = $"search?format=jsonv2&limit=5&addressdetails=1{countryFilter}&q={Uri.EscapeDataString(query)}";
+                    var url = $"search?format=jsonv2&limit=5&addressdetails=1&extratags=1{countryFilter}&q={Uri.EscapeDataString(query)}";
                     using var response = await client.GetAsync(url, cancellationToken);
                     if (!response.IsSuccessStatusCode) continue;
 
@@ -346,6 +368,31 @@ public static class AiLogisticsEndpoints
 
                     foreach (var row in document.RootElement.EnumerateArray())
                     {
+                        var category = FirstNonEmpty(ReadString(row, "category"), ReadString(row, "class"))?.ToLowerInvariant();
+                        var type = ReadString(row, "type")?.ToLowerInvariant();
+                        JsonElement extraTags = default;
+                        var hasExtraTags = row.TryGetProperty("extratags", out extraTags) && extraTags.ValueKind == JsonValueKind.Object;
+                        var industrial = hasExtraTags ? ReadString(extraTags, "industrial")?.ToLowerInvariant() : null;
+                        var harbour = hasExtraTags ? ReadString(extraTags, "harbour")?.ToLowerInvariant() : null;
+                        var seamarkType = hasExtraTags ? ReadString(extraTags, "seamark:type")?.ToLowerInvariant() : null;
+
+                        if (transportMode == "Air")
+                        {
+                            if (category != "aeroway" || (type != "aerodrome" && type != "airport")) continue;
+                        }
+                        else
+                        {
+                            var displayName = FirstNonEmpty(ReadString(row, "name"), ReadString(row, "display_name")) ?? string.Empty;
+                            var normalizedName = Normalize(displayName);
+                            var nameLooksMaritime = normalizedName.Contains("port") || normalizedName.Contains("puerto") || normalizedName.Contains("harbour") || normalizedName.Contains("harbor");
+                            var isMaritime = industrial == "port"
+                                || !string.IsNullOrWhiteSpace(harbour)
+                                || seamarkType == "harbour"
+                                || (category == "place" && type == "seaport")
+                                || (category == "waterway" && type == "dock")
+                                || (category == "landuse" && type == "industrial" && nameLooksMaritime);
+                            if (!isMaritime) continue;
+                        }
                         if (!TryParseCoordinate(row, "lat", out var latitude)
                             || !TryParseCoordinate(row, "lon", out var longitude))
                         {
@@ -372,7 +419,11 @@ public static class AiLogisticsEndpoints
 
                         results.Add(new DiscoveredPort(
                             name,
-                            null,
+                            hasExtraTags
+                                ? transportMode == "Air"
+                                    ? FirstNonEmpty(ReadString(extraTags, "iata"), ReadString(extraTags, "icao"), ReadString(extraTags, "ref"))
+                                    : FirstNonEmpty(ReadString(extraTags, "locode"), ReadString(extraTags, "ref"))
+                                : null,
                             country,
                             latitude,
                             longitude,
@@ -449,6 +500,18 @@ public static class AiLogisticsEndpoints
     private static string? NormalizeOptional(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private static string NormalizeTransportMode(string? value)
+    {
+        var normalized = NormalizeOptional(value)?.ToLowerInvariant();
+        return normalized switch
+        {
+            "air" or "aereo" or "aéreo" => "Air",
+            "land" or "terrestre" => "Land",
+            "multimodal" => "Multimodal",
+            _ => "Maritime",
+        };
+    }
+
     private static decimal CalculateDistanceKm(
         decimal latitude1,
         decimal longitude1,
@@ -510,6 +573,7 @@ public static class AiLogisticsEndpoints
         string? PickupAddress,
         decimal? Latitude,
         decimal? Longitude,
-        decimal? MaxDistanceKm = MaximumAllowedRadiusKm
+        decimal? MaxDistanceKm = MaximumAllowedRadiusKm,
+        string? TransportMode = "Maritime"
     );
 }

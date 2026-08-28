@@ -80,6 +80,13 @@ builder.Services.AddHttpClient("overpass", client =>
     client.DefaultRequestHeaders.UserAgent.ParseAdd("DholeAIService/1.0 (+https://customcodecr.com)");
     client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
 });
+builder.Services.AddHttpClient("overpass-kumi", client =>
+{
+    client.BaseAddress = new Uri("https://overpass.kumi.systems/api/");
+    client.Timeout = TimeSpan.FromSeconds(35);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("DholeAIService/1.0 (+https://customcodecr.com)");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+});
 builder.Services.AddScoped<AiFileChatService>();
 
 var app = builder.Build();
@@ -122,7 +129,7 @@ app.MapAiProfileEndpoints();
 app.MapAiPromptTemplateEndpoints();
 app.MapAiExecutionEndpoints();
 app.MapAiFileExecutionEndpoints();
-app.MapAiLogisticsEndpoints();
+app.MapAiLogisticsV2Endpoints();
 
 using (var scope = app.Services.CreateScope())
 {

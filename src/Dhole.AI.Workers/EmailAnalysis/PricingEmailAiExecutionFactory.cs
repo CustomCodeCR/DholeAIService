@@ -207,7 +207,7 @@ internal static class PricingEmailAiExecutionFactory
         var prompt = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "fcl-email-v12-semantic-extraction",
+                taskVersion = "fcl-email-v13-pdf-global-header",
                 stage = new
                 {
                     name = stage.Name,
@@ -233,7 +233,9 @@ internal static class PricingEmailAiExecutionFactory
                     "Reconoce equivalencias de equipo 20-DV/20DV/20FT-DV como 20DV, 40-DV/40DV/40FT-DV como 40DV y 40-HC/40HC como 40HC; nunca mezcles los montos entre columnas.",
                     "Si aparece ASIA BASE PORTS y el mismo correo enumera Base Ports, usa esa lista explícita de puertos como POL compacto separado por / en lugar de devolver literalmente ASIA BASE PORTS.",
                     "Cuando el proveedor publica OCEAN FREIGHT y TOTAL ALL IN, oceanFreight conserva solo el OCEAN FREIGHT y totalCost conserva exactamente el TOTAL ALL IN publicado. No conviertas totalCost en totalSale. Los cargos por BL pueden quedar en remarks aunque estén incluidos en el total publicado.",
-                    "La vigencia puede estar en subject o body, por ejemplo VALIDO DEL 01 AL 06 DE SEPTIEMBRE 2026; aplícala a todas las filas del bloque tarifario correspondiente.",
+                    "La vigencia puede estar en subject, body o encabezado global del PDF. Effective/Effective Date corresponde a validFrom y Expiration/Expiry/Valid To corresponde a validTo; cuando sean datos globales aplícalos a todas las filas del documento.",
+                    "El texto extraído de un PDF puede invertir etiqueta y fecha por coordenadas visuales, por ejemplo 26-Aug-2026Effective o 25-Sep-2026Expiration. Reconoce ambas orientaciones y devuelve fechas YYYY-MM-DD.",
+                    "El agent es el proveedor/NVOCC que emite la cotización, no la naviera de la fila. Si la evidencia identifica PLUSCARGO/PlusCargo, devuelve PlusCargo como agent y conserva MAERSK u otra línea marítima únicamente como carrier.",
                     "En columnas de monto por equipo, 20' corresponde a 20DV/20GP. Si el encabezado es 40'/40HC y comparte un monto, devuelve una fila 40DV/40GP y otra 40HC con el mismo oceanFreight.",
                     "Effective ETD con fecha representa una vigencia de un solo día: usa la misma fecha en validFrom y validTo. Si dice OMIT/OMITTED/NO SAILING/CANCELLED, omite esa ruta de rows y agrega warning.",
                     "Cuando montos y carriers aparecen en listas paralelas, asócialos por posición: USD6300/6400 con MSC/ONE significa MSC=6300 y ONE=6400, salvo evidencia explícita contraria.",
@@ -248,8 +250,8 @@ internal static class PricingEmailAiExecutionFactory
                     "Conserva en spaceComment notas generales de disponibilidad como space is tight, rollovers o confirmación de espacio caso por caso.",
                     "Una proyección futura de aumento se conserva en remarks como nota comercial y nunca se suma a oceanFreight, surcharges ni totales actuales.",
                     "No resuelvas IDs, codes, slugs ni nombres canónicos internos de Dhole. Devuelve el nombre o etiqueta que realmente aparece en la evidencia; DataExtraction hará la equivalencia contra Config.",
-                    "Para agent revisa primero subject y luego emailContext; devuelve únicamente el nombre explícito que aparezca en la evidencia. No lo conviertas a códigos, IDs o nombres internos.",
-                    "No deduzcas agent únicamente por la dirección del remitente.",
+                    "Para agent revisa subject, emailContext y encabezado/identidad del documento; devuelve únicamente el proveedor/NVOCC respaldado por la evidencia. No lo conviertas a códigos, IDs o nombres internos.",
+                    "No deduzcas agent únicamente por la dirección del remitente ni confundas carrier con agent.",
                     "Para el patrón narrativo MSC/ONE NAC con tarifa USDx/y y equipo omitido, containerType es obligatorio y debe ser 40HC; no lo devuelvas como null.",
                     "Resuelve rangos sin año con processingDateUtc y devuelve fechas YYYY-MM-DD.",
                     "currency es obligatoria: USD salvo otra moneda explícita.",
@@ -439,6 +441,8 @@ internal static class PricingEmailAiExecutionFactory
         var source = SelectNewestPricingSection(
             FirstNotEmpty(payload.SourceContent, payload.BodyText, payload.BodyHtml)
         );
+        var documentValidity = ExtractDocumentValidity(source);
+        var documentAgent = InferDocumentAgent(payload, source);
 
         // Local models can understand this WWL contract but still mix the paired
         // amounts/carriers, copy ONE commodity restrictions to MSC, omit 40HC or
@@ -463,6 +467,8 @@ internal static class PricingEmailAiExecutionFactory
             : null;
         var inferredContainer = false;
         var promotedPod = false;
+        var repairedValidity = false;
+        var repairedAgent = false;
 
         var rows = result.Rows
             .Select(row =>
@@ -489,6 +495,21 @@ internal static class PricingEmailAiExecutionFactory
                     inferredContainer = true;
                 }
 
+                var validFrom = row.ValidFrom ?? documentValidity.ValidFrom;
+                var validTo = row.ValidTo ?? documentValidity.ValidTo;
+                if ((!row.ValidFrom.HasValue && validFrom.HasValue)
+                    || (!row.ValidTo.HasValue && validTo.HasValue))
+                {
+                    repairedValidity = true;
+                }
+
+                var agent = row.Agent;
+                if (string.IsNullOrWhiteSpace(agent) && !string.IsNullOrWhiteSpace(documentAgent))
+                {
+                    agent = documentAgent;
+                    repairedAgent = true;
+                }
+
                 return row with
                 {
                     Poe = string.IsNullOrWhiteSpace(poe) ? null : poe.Trim(),
@@ -496,6 +517,9 @@ internal static class PricingEmailAiExecutionFactory
                     ContainerType = string.IsNullOrWhiteSpace(containerType)
                         ? null
                         : containerType.Trim(),
+                    Agent = string.IsNullOrWhiteSpace(agent) ? null : agent.Trim(),
+                    ValidFrom = validFrom,
+                    ValidTo = validTo,
                 };
             })
             .ToArray();
@@ -515,6 +539,20 @@ internal static class PricingEmailAiExecutionFactory
             );
         }
 
+        if (repairedValidity)
+        {
+            warnings.Add(
+                $"Vigencia global del documento aplicada a filas incompletas: {documentValidity.ValidFrom:yyyy-MM-dd} a {documentValidity.ValidTo:yyyy-MM-dd}."
+            );
+        }
+
+        if (repairedAgent)
+        {
+            warnings.Add(
+                $"Agent global del documento aplicado a filas incompletas: {documentAgent}."
+            );
+        }
+
         return result with
         {
             Rows = rows,
@@ -524,6 +562,121 @@ internal static class PricingEmailAiExecutionFactory
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray(),
         };
+    }
+
+    internal static (DateTime? ValidFrom, DateTime? ValidTo) ExtractDocumentValidity(
+        string? source
+    )
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return (null, null);
+        }
+
+        return (
+            FindDocumentDate(
+                source,
+                @"Effective(?:\s+Date)?|Effective\s+From|Valid(?:ity)?\s+From|Vigencia\s+Desde"
+            ),
+            FindDocumentDate(
+                source,
+                @"Expiration(?:\s+Date)?|Expiry(?:\s+Date)?|Valid(?:ity)?\s+To|Valid\s+Until|Vigencia\s+Hasta"
+            )
+        );
+    }
+
+    internal static string? InferDocumentAgent(
+        AiPricingEmailPayload payload,
+        string? source
+    )
+    {
+        var evidence = string.Join(
+            "\n",
+            new[] { payload.Subject, payload.BodyText, payload.BodyHtml, source }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+        );
+
+        if (Regex.IsMatch(evidence, @"\bPLUS\s*CARGO\b|\bPLUSCARGO\b", RegexOptions.IgnoreCase))
+        {
+            return "PlusCargo";
+        }
+
+        // PlusCargo renders its logo as vector artwork in these PDFs, so it
+        // can disappear from extracted text. These recurring issuer fields
+        // identify the quote provider without confusing MAERSK with the agent.
+        var hasAddress = evidence.Contains(
+            "8501 Northwest 17th",
+            StringComparison.OrdinalIgnoreCase
+        );
+        var hasContact = evidence.Contains(
+            "Santiago Fioravanti",
+            StringComparison.OrdinalIgnoreCase
+        );
+        var hasQuotationRef = evidence.Contains(
+            "Quotation Ref",
+            StringComparison.OrdinalIgnoreCase
+        );
+
+        return hasAddress && hasContact && hasQuotationRef ? "PlusCargo" : null;
+    }
+
+    private static DateTime? FindDocumentDate(string source, string labelPattern)
+    {
+        const string datePattern =
+            @"(?<date>\d{1,2}[-/\s](?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[-/\s]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})";
+
+        var afterLabel = Regex.Match(
+            source,
+            $@"(?is)(?:{labelPattern})\s*:?\s*{datePattern}"
+        );
+        if (afterLabel.Success)
+        {
+            return ParseDocumentDate(afterLabel.Groups["date"].Value);
+        }
+
+        var beforeLabel = Regex.Match(
+            source,
+            $@"(?is){datePattern}\s*(?:{labelPattern})\s*:?"
+        );
+        return beforeLabel.Success
+            ? ParseDocumentDate(beforeLabel.Groups["date"].Value)
+            : null;
+    }
+
+    private static DateTime? ParseDocumentDate(string value)
+    {
+        var cultures = new[]
+        {
+            CultureInfo.InvariantCulture,
+            CultureInfo.GetCultureInfo("en-US"),
+            CultureInfo.GetCultureInfo("es-CR"),
+            CultureInfo.GetCultureInfo("es-ES"),
+        };
+        var formats = new[]
+        {
+            "d-MMM-yyyy", "dd-MMM-yyyy", "d-MMMM-yyyy", "dd-MMMM-yyyy",
+            "yyyy-MM-dd", "yyyy/M/d", "M/d/yyyy", "MM/dd/yyyy",
+            "d/M/yyyy", "dd/MM/yyyy",
+        };
+
+        foreach (var culture in cultures)
+        {
+            if (DateTime.TryParseExact(
+                    value.Trim(), formats, culture,
+                    DateTimeStyles.AllowWhiteSpaces, out var exact))
+            {
+                return exact.Date;
+            }
+
+            if (DateTime.TryParse(
+                    value.Trim(), culture,
+                    DateTimeStyles.AllowWhiteSpaces, out var parsed))
+            {
+                return parsed.Date;
+            }
+        }
+
+        return null;
     }
 
     private static ParsedAiPricingEmailResult? TryReconstructWwlPairedNarrativeNac(

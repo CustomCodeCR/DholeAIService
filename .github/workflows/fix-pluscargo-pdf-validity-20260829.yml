@@ -1,0 +1,372 @@
+name: Fix PlusCargo PDF validity and agent
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/fix-pluscargo-pdf-validity-20260829.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: [self-hosted, linux, x64, dhole]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch AI PDF normalization
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          factory_path = Path('src/Dhole.AI.Workers/EmailAnalysis/PricingEmailAiExecutionFactory.cs')
+          factory = factory_path.read_text(encoding='utf-8-sig')
+          factory = factory.replace(
+              'taskVersion = "fcl-email-v12-semantic-extraction"',
+              'taskVersion = "fcl-email-v13-pdf-global-header"',
+              1,
+          )
+
+          old_validity_rule = '                    "La vigencia puede estar en subject o body, por ejemplo VALIDO DEL 01 AL 06 DE SEPTIEMBRE 2026; aplícala a todas las filas del bloque tarifario correspondiente.",'
+          new_validity_rules = '''                    "La vigencia puede estar en subject, body o encabezado global del PDF. Effective/Effective Date corresponde a validFrom y Expiration/Expiry/Valid To corresponde a validTo; cuando sean datos globales aplícalos a todas las filas del documento.",
+                              "El texto extraído de un PDF puede invertir etiqueta y fecha por coordenadas visuales, por ejemplo 26-Aug-2026Effective o 25-Sep-2026Expiration. Reconoce ambas orientaciones y devuelve fechas YYYY-MM-DD.",
+                              "El agent es el proveedor/NVOCC que emite la cotización, no la naviera de la fila. Si la evidencia identifica PLUSCARGO/PlusCargo, devuelve PlusCargo como agent y conserva MAERSK u otra línea marítima únicamente como carrier.",'''
+          if old_validity_rule not in factory:
+              raise SystemExit('AI validity prompt anchor missing')
+          factory = factory.replace(old_validity_rule, new_validity_rules, 1)
+
+          old_agent_rules = '''                    "Para agent revisa primero subject y luego emailContext; devuelve únicamente el nombre explícito que aparezca en la evidencia. No lo conviertas a códigos, IDs o nombres internos.",
+                              "No deduzcas agent únicamente por la dirección del remitente.",'''
+          new_agent_rules = '''                    "Para agent revisa subject, emailContext y encabezado/identidad del documento; devuelve únicamente el proveedor/NVOCC respaldado por la evidencia. No lo conviertas a códigos, IDs o nombres internos.",
+                              "No deduzcas agent únicamente por la dirección del remitente ni confundas carrier con agent.",'''
+          if old_agent_rules not in factory:
+              raise SystemExit('AI agent prompt anchor missing')
+          factory = factory.replace(old_agent_rules, new_agent_rules, 1)
+
+          old_source = '''        var source = SelectNewestPricingSection(
+                      FirstNotEmpty(payload.SourceContent, payload.BodyText, payload.BodyHtml)
+                  );
+          
+                  // Local models can understand this WWL contract'''
+          new_source = '''        var source = SelectNewestPricingSection(
+                      FirstNotEmpty(payload.SourceContent, payload.BodyText, payload.BodyHtml)
+                  );
+                  var documentValidity = ExtractDocumentValidity(source);
+                  var documentAgent = InferDocumentAgent(payload, source);
+          
+                  // Local models can understand this WWL contract'''
+          if old_source not in factory:
+              raise SystemExit('NormalizeForSource source anchor missing')
+          factory = factory.replace(old_source, new_source, 1)
+
+          old_flags = '''        var inferredContainer = false;
+                  var promotedPod = false;
+          
+                  var rows = result.Rows'''
+          new_flags = '''        var inferredContainer = false;
+                  var promotedPod = false;
+                  var repairedValidity = false;
+                  var repairedAgent = false;
+          
+                  var rows = result.Rows'''
+          if old_flags not in factory:
+              raise SystemExit('NormalizeForSource flags anchor missing')
+          factory = factory.replace(old_flags, new_flags, 1)
+
+          old_row = '''                return row with
+                          {
+                              Poe = string.IsNullOrWhiteSpace(poe) ? null : poe.Trim(),
+                              Pod = string.IsNullOrWhiteSpace(pod) ? null : pod.Trim(),
+                              ContainerType = string.IsNullOrWhiteSpace(containerType)
+                                  ? null
+                                  : containerType.Trim(),
+                          };'''
+          new_row = '''                var validFrom = row.ValidFrom ?? documentValidity.ValidFrom;
+                          var validTo = row.ValidTo ?? documentValidity.ValidTo;
+                          if ((!row.ValidFrom.HasValue && validFrom.HasValue)
+                              || (!row.ValidTo.HasValue && validTo.HasValue))
+                          {
+                              repairedValidity = true;
+                          }
+          
+                          var agent = row.Agent;
+                          if (string.IsNullOrWhiteSpace(agent) && !string.IsNullOrWhiteSpace(documentAgent))
+                          {
+                              agent = documentAgent;
+                              repairedAgent = true;
+                          }
+          
+                          return row with
+                          {
+                              Poe = string.IsNullOrWhiteSpace(poe) ? null : poe.Trim(),
+                              Pod = string.IsNullOrWhiteSpace(pod) ? null : pod.Trim(),
+                              ContainerType = string.IsNullOrWhiteSpace(containerType)
+                                  ? null
+                                  : containerType.Trim(),
+                              Agent = string.IsNullOrWhiteSpace(agent) ? null : agent.Trim(),
+                              ValidFrom = validFrom,
+                              ValidTo = validTo,
+                          };'''
+          if old_row not in factory:
+              raise SystemExit('NormalizeForSource row anchor missing')
+          factory = factory.replace(old_row, new_row, 1)
+
+          old_warning = '''        if (promotedPod)
+                  {
+                      warnings.Add(
+                          "POD marítimo normalizado como POE según la regla de importación de tarifas."
+                      );
+                  }
+          
+                  return result with'''
+          new_warning = '''        if (promotedPod)
+                  {
+                      warnings.Add(
+                          "POD marítimo normalizado como POE según la regla de importación de tarifas."
+                      );
+                  }
+          
+                  if (repairedValidity)
+                  {
+                      warnings.Add(
+                          $"Vigencia global del documento aplicada a filas incompletas: {documentValidity.ValidFrom:yyyy-MM-dd} a {documentValidity.ValidTo:yyyy-MM-dd}."
+                      );
+                  }
+          
+                  if (repairedAgent)
+                  {
+                      warnings.Add(
+                          $"Agent global del documento aplicado a filas incompletas: {documentAgent}."
+                      );
+                  }
+          
+                  return result with'''
+          if old_warning not in factory:
+              raise SystemExit('NormalizeForSource warning anchor missing')
+          factory = factory.replace(old_warning, new_warning, 1)
+
+          helper_anchor = '''    private static ParsedAiPricingEmailResult? TryReconstructWwlPairedNarrativeNac(
+          '''
+          helpers = r'''    internal static (DateTime? ValidFrom, DateTime? ValidTo) ExtractDocumentValidity(
+                  string? source
+              )
+              {
+                  if (string.IsNullOrWhiteSpace(source))
+                  {
+                      return (null, null);
+                  }
+          
+                  return (
+                      FindDocumentDate(
+                          source,
+                          @"Effective(?:\s+Date)?|Effective\s+From|Valid(?:ity)?\s+From|Vigencia\s+Desde"
+                      ),
+                      FindDocumentDate(
+                          source,
+                          @"Expiration(?:\s+Date)?|Expiry(?:\s+Date)?|Valid(?:ity)?\s+To|Valid\s+Until|Vigencia\s+Hasta"
+                      )
+                  );
+              }
+          
+              internal static string? InferDocumentAgent(
+                  AiPricingEmailPayload payload,
+                  string? source
+              )
+              {
+                  var evidence = string.Join(
+                      "\n",
+                      new[] { payload.Subject, payload.BodyText, payload.BodyHtml, source }
+                          .Where(value => !string.IsNullOrWhiteSpace(value))
+                  );
+          
+                  if (Regex.IsMatch(evidence, @"\bPLUS\s*CARGO\b|\bPLUSCARGO\b", RegexOptions.IgnoreCase))
+                  {
+                      return "PlusCargo";
+                  }
+          
+                  // PlusCargo renders its logo as vector artwork in these PDFs, so it
+                  // can disappear from extracted text. These recurring issuer fields
+                  // identify the quote provider without confusing MAERSK with the agent.
+                  var hasAddress = evidence.Contains(
+                      "8501 Northwest 17th",
+                      StringComparison.OrdinalIgnoreCase
+                  );
+                  var hasContact = evidence.Contains(
+                      "Santiago Fioravanti",
+                      StringComparison.OrdinalIgnoreCase
+                  );
+                  var hasQuotationRef = evidence.Contains(
+                      "Quotation Ref",
+                      StringComparison.OrdinalIgnoreCase
+                  );
+          
+                  return hasAddress && hasContact && hasQuotationRef ? "PlusCargo" : null;
+              }
+          
+              private static DateTime? FindDocumentDate(string source, string labelPattern)
+              {
+                  const string datePattern =
+                      @"(?<date>\d{1,2}[-/\s](?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[-/\s]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})";
+          
+                  var afterLabel = Regex.Match(
+                      source,
+                      $@"(?is)(?:{labelPattern})\s*:?\s*{datePattern}"
+                  );
+                  if (afterLabel.Success)
+                  {
+                      return ParseDocumentDate(afterLabel.Groups["date"].Value);
+                  }
+          
+                  var beforeLabel = Regex.Match(
+                      source,
+                      $@"(?is){datePattern}\s*(?:{labelPattern})\s*:?"
+                  );
+                  return beforeLabel.Success
+                      ? ParseDocumentDate(beforeLabel.Groups["date"].Value)
+                      : null;
+              }
+          
+              private static DateTime? ParseDocumentDate(string value)
+              {
+                  var cultures = new[]
+                  {
+                      CultureInfo.InvariantCulture,
+                      CultureInfo.GetCultureInfo("en-US"),
+                      CultureInfo.GetCultureInfo("es-CR"),
+                      CultureInfo.GetCultureInfo("es-ES"),
+                  };
+                  var formats = new[]
+                  {
+                      "d-MMM-yyyy", "dd-MMM-yyyy", "d-MMMM-yyyy", "dd-MMMM-yyyy",
+                      "yyyy-MM-dd", "yyyy/M/d", "M/d/yyyy", "MM/dd/yyyy",
+                      "d/M/yyyy", "dd/MM/yyyy",
+                  };
+          
+                  foreach (var culture in cultures)
+                  {
+                      if (DateTime.TryParseExact(
+                              value.Trim(), formats, culture,
+                              DateTimeStyles.AllowWhiteSpaces, out var exact))
+                      {
+                          return exact.Date;
+                      }
+          
+                      if (DateTime.TryParse(
+                              value.Trim(), culture,
+                              DateTimeStyles.AllowWhiteSpaces, out var parsed))
+                      {
+                          return parsed.Date;
+                      }
+                  }
+          
+                  return null;
+              }
+          
+          '''
+          if helper_anchor not in factory:
+              raise SystemExit('AI helper anchor missing')
+          factory = factory.replace(helper_anchor, helpers + helper_anchor, 1)
+          factory_path.write_text(factory, encoding='utf-8')
+
+          worker_path = Path('src/Dhole.AI.Workers/Workers/AiEmailAnalysisWorker.cs')
+          worker = worker_path.read_text(encoding='utf-8-sig')
+          old_worker = '''            var parsed = PricingEmailAiExecutionFactory.Merge(parsedStages);
+                      var primaryResult = successfulOutputs[^1];'''
+          new_worker = '''            var parsed = PricingEmailAiExecutionFactory.NormalizeForSource(
+                          PricingEmailAiExecutionFactory.Merge(parsedStages),
+                          payload
+                      );
+                      var primaryResult = successfulOutputs[^1];'''
+          if old_worker not in worker:
+              raise SystemExit('AI worker merge anchor missing')
+          worker = worker.replace(old_worker, new_worker, 1)
+          worker_path.write_text(worker, encoding='utf-8')
+          PY
+
+          cat > tests/Dhole.AI.UnitTests/PlusCargoPdfNormalizationTests.cs <<'CS'
+          using Dhole.AI.Worker.EmailAnalysis;
+          
+          namespace Dhole.AI.UnitTests;
+          
+          [TestClass]
+          public sealed class PlusCargoPdfNormalizationTests
+          {
+              [TestMethod]
+              public void NormalizeForSource_PlusCargoPdf_RepairsValidityAndAgent()
+              {
+                  const string source =
+                      "26-Aug-2026Effective :CASTRO FALLAS Costa RicaCustomer:\n"
+                      + "25-Sep-2026Expiration:\n"
+                      + "Quotation Ref. : m3390\n"
+                      + "8501 Northwest 17th\n"
+                      + "Street, Suite 102\n"
+                      + "Santiago Fioravanti\n"
+                      + "MAERSK Port Everglades Puerto Moin";
+          
+                  var payload = new AiPricingEmailPayload(
+                      Guid.NewGuid(), Guid.NewGuid(), "rates@example.com",
+                      "FCL quotation", null, null, "Attachment", "Quote-m3390.pdf",
+                      "application/pdf", source, "correlation-id",
+                      "DataExtraction.AiResultHasBlockingIssues",
+                      "missing_valid_from, missing_valid_to", 80m,
+                      Array.Empty<AiPreviousPricingEmailRow>(),
+                      Array.Empty<AiPreviousExtractionIssue>(),
+                      Array.Empty<AiCatalogGroupHint>(), null, null
+                  );
+                  var parsed = new ParsedAiPricingEmailResult(
+                      91m,
+                      [new AiPricingEmailResultRow(
+                          "Port Everglades", "Puerto Moin", null, "20DC", "MAERSK",
+                          null, null, "USD", 12, null, null, null, 1349m, null,
+                          null, null, 2369m, null, null, null, null, null)],
+                      []
+                  );
+          
+                  var result = PricingEmailAiExecutionFactory.NormalizeForSource(parsed, payload);
+                  var row = result.Rows.Single();
+          
+                  Assert.AreEqual(new DateTime(2026, 8, 26), row.ValidFrom);
+                  Assert.AreEqual(new DateTime(2026, 9, 25), row.ValidTo);
+                  Assert.AreEqual("PlusCargo", row.Agent);
+                  Assert.AreEqual("MAERSK", row.Carrier);
+              }
+          
+              [TestMethod]
+              public void ExtractDocumentValidity_LabelBeforeDate_IsAccepted()
+              {
+                  const string source =
+                      "Customer: CASTRO FALLAS Costa Rica Effective : 26-Aug-2026\n"
+                      + "Expiration: 25-Sep-2026\nPLUSCARGO";
+          
+                  var validity = PricingEmailAiExecutionFactory.ExtractDocumentValidity(source);
+          
+                  Assert.AreEqual(new DateTime(2026, 8, 26), validity.ValidFrom);
+                  Assert.AreEqual(new DateTime(2026, 9, 25), validity.ValidTo);
+              }
+          }
+          CS
+
+      - name: Validate focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet test tests/Dhole.AI.UnitTests/Dhole.AI.UnitTests.csproj -c Release --filter FullyQualifiedName~PlusCargoPdfNormalizationTests
+          git diff --check
+
+      - name: Commit directly to master
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/fix-pluscargo-pdf-validity-20260829.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(ai): recover PlusCargo PDF validity and agent"
+          git push origin HEAD:master

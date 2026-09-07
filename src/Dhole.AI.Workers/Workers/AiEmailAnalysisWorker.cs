@@ -390,7 +390,9 @@ internal sealed class AiEmailAnalysisWorker(
                 }
             }
 
-            if (parsedStages.Count == 0 || successfulOutputs.Count == 0)
+            if (parsedStages.Count == 0 || successfulOutputs.Count == 0
+                || (preparedStages.All(stage => stage.StageName == "source-chunk")
+                    && parsedStages.Count != preparedStages.Count))
             {
                 await HandleFailureAsync(
                     job,

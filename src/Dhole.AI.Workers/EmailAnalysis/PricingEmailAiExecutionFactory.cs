@@ -16,7 +16,7 @@ internal static class PricingEmailAiExecutionFactory
     private const int MaximumPreviousRows = 10;
     private const int MaximumPreviousIssues = 16;
     private const int MaximumCatalogItemsPerGroup = 20;
-    private const int MaximumStages = 2;
+    private const int MaximumStages = 64;
 
     private static readonly string[] PricingKeywords =
     [
@@ -106,7 +106,9 @@ internal static class PricingEmailAiExecutionFactory
             "Body",
             StringComparison.OrdinalIgnoreCase
         );
-        var focusedSourceContent = SelectNewestPricingSection(payload.SourceContent);
+        var focusedSourceContent = isBodySource
+            ? SelectNewestPricingSection(payload.SourceContent)
+            : payload.SourceContent ?? string.Empty;
         var emailContext = isBodySource
             ? null
             : LimitPreservingEdges(
@@ -130,7 +132,9 @@ internal static class PricingEmailAiExecutionFactory
                 IncludeImage: true
             ));
         }
-        else if (hasPreviousRows)
+        else if (hasPreviousRows
+            && payload.PreviousRows.Count <= MaximumPreviousRows
+            && focusedSourceContent.Length <= MaximumSourceCharactersPerStage)
         {
             stages.Add(new StageDefinition(
                 "repair-deterministic-draft",
@@ -174,7 +178,16 @@ internal static class PricingEmailAiExecutionFactory
             ));
         }
 
-        var selectedStages = stages.Take(MaximumStages).ToArray();
+        if (stages.Count > MaximumStages)
+        {
+            throw new AiEmailJobException(
+                "AI.SourceTooLarge",
+                "El documento supera el límite de fragmentos; divídalo antes de reintentar. No se procesó parcialmente.",
+                isTransient: false
+            );
+        }
+
+        var selectedStages = stages.ToArray();
         return selectedStages
             .Select((stage, index) => CreateStage(
                 response,
@@ -207,7 +220,7 @@ internal static class PricingEmailAiExecutionFactory
         var prompt = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "fcl-email-v13-pdf-global-header",
+                taskVersion = "pricing-email-v14-complete-attachment",
                 stage = new
                 {
                     name = stage.Name,
@@ -220,6 +233,9 @@ internal static class PricingEmailAiExecutionFactory
                 rules = new[]
                 {
                     "Devuelve solo el JSON del esquema; no inventes valores.",
+                    "Procesa también tarifas LCL y terrestres. Conserva la unidad publicada (W/M, CBM, tonelada, kg, mínimo) en remarks; no conviertas tarifas unitarias en totales por contenedor ni uses el mínimo como tarifa unitaria.",
+                    "En un correo con varios tarifarios, relaciona cada vigencia del cuerpo con el adjunto por su ruta, región y modalidad. Asia y Oceanía hasta 15/09/2026 no implica que los demás adjuntos venzan ese día. No asignes una fecha global cuando existen varias vigencias distintas.",
+                    "El cuerpo que solo enumera adjuntos y vigencias aporta contexto, no filas con montos. No inventes naviera, equipo, fecha inicial ni monto para completar campos requeridos; conserva null y advierte qué dato falta.",
                     "Tu responsabilidad termina en extracción semántica. Conserva los valores observados en la fuente; DataExtraction normaliza catálogos, equipos, rutas, moneda, fechas y reglas de negocio antes de Pricing.",
                     "El contenido fue enfocado al mensaje tarifario más reciente. Ignora cualquier tarifa histórica, firma o conversación citada que todavía aparezca.",
                     "Si todavía aparece una cadena de respuestas o reenviados, la primera sección visible con una tarifa FCL completa es la vigente. Nunca prefieras una sección posterior solo porque tenga más filas, montos o detalle; las secciones posteriores pertenecen al historial.",
@@ -1312,15 +1328,15 @@ internal static class PricingEmailAiExecutionFactory
             {
                 chunks.Add(builder.ToString());
                 builder.Clear();
-                if (chunks.Count >= MaximumStages)
-                {
-                    break;
-                }
+
             }
 
             if (line.Length > MaximumSourceCharactersPerStage)
             {
-                builder.AppendLine(line[..MaximumSourceCharactersPerStage]);
+                for (var offset = 0; offset < line.Length; offset += MaximumSourceCharactersPerStage)
+                {
+                    chunks.Add(line.Substring(offset, Math.Min(MaximumSourceCharactersPerStage, line.Length - offset)));
+                }
             }
             else
             {
@@ -1328,7 +1344,7 @@ internal static class PricingEmailAiExecutionFactory
             }
         }
 
-        if (builder.Length > 0 && chunks.Count < MaximumStages)
+        if (builder.Length > 0)
         {
             chunks.Add(builder.ToString());
         }

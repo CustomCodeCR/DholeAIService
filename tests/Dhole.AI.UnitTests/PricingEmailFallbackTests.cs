@@ -549,4 +549,50 @@ public sealed class PricingEmailFallbackTests
         StringAssert.Contains(stage.PromptJson, "primera sección visible");
     }
 
+    [TestMethod]
+    public void LargeAttachment_PreservesEveryFragmentIncludingLongLines()
+    {
+        var source = new string('x', 25000) + "\nLAST_RATE_USD_340";
+        using var document = JsonDocument.Parse("{}");
+        var response = new DataExtractionAiEmailRequestResponse(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "hash", "correlation", "pricing-email-analysis", document.RootElement.Clone(),
+            new DataExtractionAiEmailImageResponse(false, null, null));
+        var payload = new AiPricingEmailPayload(
+            Guid.NewGuid(), response.EmailAttachmentId, "agent@example.com", "Tarifarios septiembre",
+            "Asia hasta 15/09/2026; Alemania hasta 30/09/2026", null,
+            "Attachment", "rates.pdf", "application/pdf", source,
+            "correlation", "DataExtraction.NoRows", "No rows", 0m,
+            Array.Empty<AiPreviousPricingEmailRow>(), Array.Empty<AiPreviousExtractionIssue>(),
+            Array.Empty<AiCatalogGroupHint>(), null, null);
+
+        var stages = PricingEmailAiExecutionFactory.CreateStages(response, payload, null);
+        Assert.IsTrue(stages.Count > 2);
+        var reconstructed = string.Concat(stages.Select(stage =>
+        {
+            using var prompt = JsonDocument.Parse(stage.PromptJson);
+            return prompt.RootElement.GetProperty("sourceContent").GetString();
+        }));
+        Assert.AreEqual(source.Replace("\n", ""), reconstructed.Replace("\n", ""));
+    }
+
+    [TestMethod]
+    public void Attachment_DoesNotTreatFollowingTablesAsQuotedEmailHistory()
+    {
+        const string source = "Published FAK\nFIRST_RATE\nRegards\nSECOND_RATE";
+        using var document = JsonDocument.Parse("{}");
+        var response = new DataExtractionAiEmailRequestResponse(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "hash", "correlation", "pricing-email-analysis", document.RootElement.Clone(),
+            new DataExtractionAiEmailImageResponse(false, null, null));
+        var payload = new AiPricingEmailPayload(
+            Guid.NewGuid(), response.EmailAttachmentId, "agent@example.com", "Tarifarios",
+            null, null, "Attachment", "rates.pdf", "application/pdf", source,
+            "correlation", "DataExtraction.NoRows", "No rows", 0m,
+            Array.Empty<AiPreviousPricingEmailRow>(), Array.Empty<AiPreviousExtractionIssue>(),
+            Array.Empty<AiCatalogGroupHint>(), null, null);
+        var stage = PricingEmailAiExecutionFactory.CreateStages(response, payload, null).Single();
+        Assert.Contains("SECOND_RATE", stage.PromptJson);
+    }
+
 }

@@ -113,6 +113,11 @@ public static class WorkerServiceCollectionExtensions
     {
         services.AddCustomCodeWorkers(configuration);
 
+        // AiEmailAnalysisWorker owns scoped persistence/orchestrator dependencies.
+        // Register it as a scoped implementation and let the dispatcher create one
+        // isolated scope per parallel slot.
+        services.AddScoped<AiEmailAnalysisWorker>();
+
         services.AddCustomCodePeriodicWorker<AiCacheWarmupWorker>();
         services.AddCustomCodePeriodicWorker<AiConnectionHealthWorker>();
         services.AddCustomCodePeriodicWorker<AiExecutionCleanupWorker>();

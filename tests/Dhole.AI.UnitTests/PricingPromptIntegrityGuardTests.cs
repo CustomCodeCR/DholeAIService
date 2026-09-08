@@ -37,6 +37,12 @@ public sealed class PricingPromptIntegrityGuardTests
         Assert.Contains("cada oceanFreight debe poder señalar una celda monetaria concreta", systemPrompt);
         Assert.Contains("nunca restes ni sumes días por UTC", systemPrompt);
         Assert.Contains("solo la sección tarifaria más reciente", systemPrompt);
+        Assert.Contains("Xingang y Tianjin son identidades comerciales de POL distintas", systemPrompt);
+        Assert.Contains("Tianjin(+arbUSD100)", systemPrompt);
+        Assert.Contains("Chongqing(+arb USD850)", systemPrompt);
+        Assert.Contains("originCharges=null", systemPrompt);
+        Assert.Contains("no se suma a oceanFreight", systemPrompt);
+        Assert.Contains("línea continuada sigue perteneciendo a la misma lista de POL", systemPrompt);
     }
 
     [TestMethod]

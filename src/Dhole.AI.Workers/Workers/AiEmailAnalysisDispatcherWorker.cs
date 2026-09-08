@@ -66,9 +66,7 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
             }
 
             await using var scope = scopeFactory.CreateAsyncScope();
-            var worker = ActivatorUtilities.CreateInstance<AiEmailAnalysisWorker>(
-                scope.ServiceProvider
-            );
+            var worker = scope.ServiceProvider.GetRequiredService<AiEmailAnalysisWorker>();
             await worker.ExecuteAsync(context, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

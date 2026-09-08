@@ -116,7 +116,8 @@ public static class WorkerServiceCollectionExtensions
         services.AddCustomCodePeriodicWorker<AiCacheWarmupWorker>();
         services.AddCustomCodePeriodicWorker<AiConnectionHealthWorker>();
         services.AddCustomCodePeriodicWorker<AiExecutionCleanupWorker>();
-        services.AddCustomCodePeriodicWorker<AiEmailAnalysisWorker>();
+        services.AddCustomCodePeriodicWorker<AiEmailAnalysisOrphanRecoveryWorker>();
+        services.AddCustomCodePeriodicWorker<AiEmailAnalysisDispatcherWorker>();
 
         return services;
     }

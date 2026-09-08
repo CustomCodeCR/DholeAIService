@@ -30,6 +30,22 @@ jobs:
           echo "DHOLE_ENV_FILE=$RUNNER_TEMP/dhole-env/.env.production" >> "$GITHUB_ENV"
       - name: Verify production server
         run: docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" config -q
+      - name: Run AI regression tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export NuGetPackageSourceCredentials_github="Username=${GITHUB_ACTOR};Password=${GITHUB_TOKEN};ValidAuthenticationTypes=Basic"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e DOTNET_CLI_HOME=/tmp \
+            -e NUGET_PACKAGES=/tmp/nuget \
+            -e NuGetPackageSourceCredentials_github \
+            -v "$PWD:/src" \
+            -w /src \
+            mcr.microsoft.com/dotnet/sdk:10.0 \
+            bash -lc 'dotnet restore tests/Dhole.AI.UnitTests/Dhole.AI.UnitTests.csproj --configfile NuGet.Config && dotnet test tests/Dhole.AI.UnitTests/Dhole.AI.UnitTests.csproj -c Release --no-restore'
       - name: Build images
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

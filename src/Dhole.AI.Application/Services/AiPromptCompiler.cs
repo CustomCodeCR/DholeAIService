@@ -22,6 +22,10 @@ public sealed class AiPromptCompiler : IAiPromptCompiler
         - sourceContent es la autoridad. Si previousExtraction está incompleto, desplazado, duplica montos o contradice una celda explícita de la tabla, corrígelo usando la fuente original; nunca fuerces la fuente para que coincida con un borrador erróneo.
         - Las fechas Effective Date y Expiry date son fechas comerciales sin zona horaria. Conserva exactamente el día calendario publicado; nunca restes ni sumes días por UTC, zona horaria o conversión de timestamp.
         - En hilos de correo, solo la sección tarifaria más reciente es vigente. No mezcles una tarifa actual con montos, vigencias o carriers de una respuesta citada anterior.
+        - Xingang y Tianjin son identidades comerciales de POL distintas. Si la fuente dice Xingang devuelve Xingang; si dice Tianjin devuelve Tianjin. Nunca uses "Tianjin (Xingang)" como equivalencia automática y nunca sustituyas uno por el otro.
+        - Un sufijo entre paréntesis +arb/arb es un arbitrario específico del POL y debe devolverse en originCharges de ESE origen, no dentro del nombre del puerto. Reconoce variantes con o sin espacios, por ejemplo Tianjin(+arbUSD100), Nanjing(+arb USD400), Wuhan(+arb USD450) y Chongqing(+arb USD850).
+        - Nunca copies el arbitrario de un POL a otro. Los POL sin arbitrario explícito conservan originCharges=null. El arbitrario no se suma a oceanFreight; es un cargo de origen separado asociado únicamente a ese POL.
+        - Si una lista de POL se parte por salto de línea antes de que aparezca POD o COMM, la línea continuada sigue perteneciendo a la misma lista de POL. No pierdas el puerto ni su arbitrario por el wrapping visual del correo, PDF o cliente de email.
         """;
 
     public Result<AiCompiledPrompt> Compile(

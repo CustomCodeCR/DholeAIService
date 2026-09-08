@@ -20,6 +20,13 @@ internal sealed class DataExtractionAiEmailRequestClient(
     private const string CanonicalRequestPath =
         "/api/internal/data-extraction/ai-email-requests/";
 
+    private const string CurrentBodyBegin = "[[CURRENT_EMAIL_BODY_BEGIN]]";
+    private const string CurrentBodyEnd = "[[CURRENT_EMAIL_BODY_END]]";
+    private const string AttachmentBegin = "[[ATTACHMENT_SOURCE_BEGIN]]";
+    private const string AttachmentEnd = "[[ATTACHMENT_SOURCE_END]]";
+    private const string BodySourceBegin = "[[CURRENT_EMAIL_SOURCE_BEGIN]]";
+    private const string BodySourceEnd = "[[CURRENT_EMAIL_SOURCE_END]]";
+
     private static readonly JsonSerializerOptions JsonOptions = new(
         JsonSerializerDefaults.Web
     )
@@ -46,7 +53,7 @@ internal sealed class DataExtractionAiEmailRequestClient(
             throw CreateHttpException(response.StatusCode);
         }
 
-        return await response.Content.ReadFromJsonAsync<
+        var result = await response.Content.ReadFromJsonAsync<
                 DataExtractionAiEmailRequestResponse
             >(JsonOptions, timeout.Token)
             ?? throw new AiEmailJobException(
@@ -54,6 +61,128 @@ internal sealed class DataExtractionAiEmailRequestClient(
                 "DataExtraction devolvió un payload interno vacío o inválido.",
                 isTransient: false
             );
+
+        return HardenSourceIsolation(result);
+    }
+
+    private static DataExtractionAiEmailRequestResponse HardenSourceIsolation(
+        DataExtractionAiEmailRequestResponse response
+    )
+    {
+        if (response.Payload.ValueKind != JsonValueKind.Object)
+        {
+            return response;
+        }
+
+        AiPricingEmailPayload? payload;
+        try
+        {
+            payload = response.Payload.Deserialize<AiPricingEmailPayload>(JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return response;
+        }
+
+        if (payload is null)
+        {
+            return response;
+        }
+
+        var isBodySource = payload.SourceType.Contains(
+            "Body",
+            StringComparison.OrdinalIgnoreCase
+        );
+
+        var hardened = payload with
+        {
+            BodyText = HardenCurrentBody(payload.BodyText),
+            BodyHtml = HardenCurrentBody(payload.BodyHtml),
+            SourceContent = HardenSourceContent(payload, isBodySource),
+        };
+
+        return response with
+        {
+            Payload = JsonSerializer.SerializeToElement(hardened, JsonOptions),
+        };
+    }
+
+    private static string? HardenCurrentBody(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        if (value.Contains(CurrentBodyBegin, StringComparison.Ordinal))
+        {
+            return value;
+        }
+
+        return $"""
+            {CurrentBodyBegin}
+            REGLAS DE AISLAMIENTO DE FUENTE:
+            - Esta sección representa únicamente el cuerpo del mensaje actual.
+            - Firmas, cabeceras citadas y conversaciones reenviadas no reemplazan remitente, asunto ni datos tarifarios del mensaje actual.
+            - No copies POL, POE, POD, naviera, equipo, fechas, moneda o montos desde un adjunto para completar esta sección.
+            - Si un dato no aparece en esta fuente, déjalo nulo/desconocido en vez de tomarlo de otra fuente.
+
+            {value}
+            {CurrentBodyEnd}
+            """;
+    }
+
+    private static string HardenSourceContent(
+        AiPricingEmailPayload payload,
+        bool isBodySource
+    )
+    {
+        var value = payload.SourceContent ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        if (
+            value.Contains(AttachmentBegin, StringComparison.Ordinal)
+            || value.Contains(BodySourceBegin, StringComparison.Ordinal)
+        )
+        {
+            return value;
+        }
+
+        if (isBodySource)
+        {
+            return $"""
+                {BodySourceBegin}
+                source_name: {payload.SourceName}
+                source_type: {payload.SourceType}
+                content_type: {payload.SourceContentType ?? "unknown"}
+                REGLAS DE AISLAMIENTO DE FUENTE:
+                - Extrae filas únicamente de este cuerpo de correo.
+                - No completes campos usando información de adjuntos, firmas o historial citado.
+                - Cada fila debe ser coherente dentro de esta misma fuente; si falta un campo, conserva null y agrega warning.
+
+                {value}
+                {BodySourceEnd}
+                """;
+        }
+
+        return $"""
+            {AttachmentBegin}
+            source_name: {payload.SourceName}
+            source_type: {payload.SourceType}
+            content_type: {payload.SourceContentType ?? "unknown"}
+            REGLAS DE AISLAMIENTO DE FUENTE:
+            - Todo dato tarifario de esta sección pertenece únicamente a este adjunto.
+            - No copies POL, POE, POD, naviera, equipo, fechas, moneda o montos desde el cuerpo del correo, historial citado ni otro adjunto.
+            - El cuerpo del correo puede orientar qué adjunto corresponde a una región o vigencia, pero nunca puede aportar silenciosamente campos faltantes a una fila de este documento.
+            - previousExtraction solo sirve para reparar la extracción de esta misma fuente; no autoriza mezclar documentos.
+            - Si dos fuentes contradicen un campo, conserva la evidencia de esta fuente o devuelve null; nunca combines ambas para fabricar una fila completa.
+
+            {value}
+            {AttachmentEnd}
+            """;
     }
 
     private Uri ResolveEndpoint(string value)

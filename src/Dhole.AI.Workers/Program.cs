@@ -1,4 +1,3 @@
-
 using CustomCodeFramework.Core.Abstractions;
 using Dhole.AI.Application.DependencyInjection;
 using Dhole.AI.Infrastructure.Time;
@@ -22,7 +21,11 @@ builder.Configuration.Sources.Clear();
 builder
     .Configuration.SetBasePath(contentRoot)
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-    .AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: true)
+    .AddJsonFile(
+        $"appsettings.{builder.Environment.EnvironmentName}.json",
+        optional: true,
+        reloadOnChange: true
+    )
     .AddEnvironmentVariables();
 
 builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();

@@ -3,6 +3,7 @@ using CustomCodeFramework.Redis.Streams.Messages;
 using Dhole.AI.Application.Abstractions.Auditing;
 using Dhole.AI.Application.Auditing;
 using Dhole.AI.Domain.EmailAnalysis.Entities;
+using Dhole.AI.Domain.EmailAnalysis.Enums;
 using Dhole.AI.Persistence.DbContexts;
 using Dhole.AI.Worker.EmailAnalysis;
 using Microsoft.EntityFrameworkCore;
@@ -35,6 +36,31 @@ internal sealed class AiPricingEmailAnalysisRequestedStreamHandler(
         );
         if (exists)
         {
+            return;
+        }
+
+        // DataExtraction puede volver a publicar el mismo payload con un RequestId nuevo
+        // después de un retry. No debemos crear dos trabajos simultáneos para el mismo
+        // correo/adjunto/hash, porque ambos terminarían compitiendo por el mismo modelo local.
+        var duplicatePayload = await dbContext.AiEmailAnalysisJobs.AnyAsync(
+            item =>
+                item.EmailMessageId == integrationEvent.EmailMessageId
+                && item.EmailAttachmentId == integrationEvent.EmailAttachmentId
+                && item.RequestHash == integrationEvent.RequestHash
+                && item.Status != AiEmailAnalysisJobStatus.Failed,
+            cancellationToken
+        );
+        if (duplicatePayload)
+        {
+            logger.LogInformation(
+                "Solicitud AI duplicada ignorada. solicitud {RequestId}; correo {EmailMessageId}; "
+                    + "adjunto {EmailAttachmentId}; RequestHash {RequestHash}; CorrelationId {CorrelationId}.",
+                integrationEvent.RequestId,
+                integrationEvent.EmailMessageId,
+                integrationEvent.EmailAttachmentId,
+                integrationEvent.RequestHash,
+                integrationEvent.CorrelationId
+            );
             return;
         }
 
@@ -97,9 +123,7 @@ internal sealed class AiPricingEmailAnalysisRequestedStreamHandler(
             dbContext.ChangeTracker.Clear();
             if (
                 await dbContext.AiEmailAnalysisJobs.AnyAsync(
-                    item =>
-                        item.ExternalRequestId
-                        == integrationEvent.RequestId,
+                    item => item.ExternalRequestId == integrationEvent.RequestId,
                     cancellationToken
                 )
             )

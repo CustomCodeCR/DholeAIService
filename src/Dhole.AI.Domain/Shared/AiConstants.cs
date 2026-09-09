@@ -1,4 +1,3 @@
-
 namespace Dhole.AI.Domain.Shared;
 
 public static class AiConstants
@@ -7,7 +6,10 @@ public static class AiConstants
 
     public const int DefaultTimeoutSeconds = 300;
     public const int MinimumTimeoutSeconds = 1;
-    public const int MaximumTimeoutSeconds = 3_600;
+    // Long local inferences (Ollama/Qwen) can legitimately exceed the previous one-hour ceiling.
+    // Keep a 30-day fail-safe so operators can run effectively unbounded jobs without creating
+    // timers outside the safe range supported by CancellationTokenSource.
+    public const int MaximumTimeoutSeconds = 2_592_000;
     public const decimal DefaultTemperature = 0.2m;
     public const decimal MinimumTemperature = 0m;
     public const decimal MaximumTemperature = 2m;

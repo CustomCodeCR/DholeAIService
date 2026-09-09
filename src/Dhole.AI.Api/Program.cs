@@ -1,4 +1,3 @@
-
 using CustomCodeFramework.Api.DependencyInjection;
 using CustomCodeFramework.Api.Swagger;
 using CustomCodeFramework.Core.Abstractions;
@@ -13,6 +12,8 @@ using Dhole.AI.Infrastructure.Time;
 using Dhole.AI.Persistence.DbContexts;
 using Dhole.AI.Persistence.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -60,6 +61,16 @@ builder.Services.AddGrpc(options =>
 builder.Services.AddApplication();
 builder.Services.AddPersistence(builder.Configuration);
 builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.TryAddSingleton<IConnectionMultiplexer>(_ =>
+{
+    var connectionString = builder.Configuration["Redis:ConnectionString"];
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        throw new InvalidOperationException("Redis:ConnectionString es requerido para operaciones de AI.");
+    }
+
+    return ConnectionMultiplexer.Connect(connectionString);
+});
 builder.Services.AddHostedService<AiDefaultProfilesProvisioningService>();
 
 builder.Services.AddHttpClient("ai-file-processing", client =>
@@ -128,6 +139,7 @@ app.MapAiModelEndpoints();
 app.MapAiProfileEndpoints();
 app.MapAiPromptTemplateEndpoints();
 app.MapAiExecutionEndpoints();
+app.MapAiOperationsEndpoints();
 app.MapAiFileExecutionEndpoints();
 app.MapAiLogisticsV2Endpoints();
 app.MapAiLogisticsNewsEndpoints();

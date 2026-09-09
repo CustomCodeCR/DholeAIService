@@ -56,6 +56,7 @@ public static class AiOperationsEndpoints
             .GroupBy(job => job.Status)
             .Select(group => new { Status = group.Key, Count = group.Count() })
             .ToListAsync(cancellationToken);
+        var countLookup = counts.ToDictionary(item => item.Status, item => item.Count);
 
         var jobs = await dbContext.AiEmailAnalysisJobs
             .AsNoTracking()
@@ -183,31 +184,17 @@ public static class AiOperationsEndpoints
             GeneratedAtUtc = DateTime.UtcNow,
             Queue = new
             {
-                Pending = Count(counts, AiEmailAnalysisJobStatus.Pending),
-                Processing = Count(counts, AiEmailAnalysisJobStatus.Processing),
-                RetryScheduled = Count(counts, AiEmailAnalysisJobStatus.RetryScheduled),
-                Failed = Count(counts, AiEmailAnalysisJobStatus.Failed),
-                Completed = Count(counts, AiEmailAnalysisJobStatus.Completed),
+                Pending = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.Pending),
+                Processing = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.Processing),
+                RetryScheduled = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.RetryScheduled),
+                Failed = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.Failed),
+                Completed = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.Completed),
                 Items = queueItems,
             },
             Redis = await ReadRedisStateAsync(redis, configuration),
             Mongo = await ReadMongoStateAsync(mongoContext, cancellationToken),
             Ollama = await ReadOllamaStateAsync(dbContext, httpClientFactory, cancellationToken),
         });
-    }
-
-    private static int Count(
-        IEnumerable<dynamic> counts,
-        AiEmailAnalysisJobStatus status)
-    {
-        foreach (var item in counts)
-        {
-            if (item.Status == status)
-            {
-                return (int)item.Count;
-            }
-        }
-        return 0;
     }
 
     private static async Task<IResult> CancelQueuedJobAsync(
@@ -384,7 +371,7 @@ public static class AiOperationsEndpoints
             var length = await database.StreamLengthAsync(stream);
             var groups = await database.StreamGroupInfoAsync(stream);
             var group = groups.FirstOrDefault(item => item.Name == groupName);
-            var hasGroup = !group.Name.IsNullOrEmpty();
+            var hasGroup = group is not null && !string.IsNullOrEmpty(group.Name);
             var consumers = hasGroup
                 ? await database.StreamConsumerInfoAsync(stream, groupName)
                 : [];
@@ -396,7 +383,7 @@ public static class AiOperationsEndpoints
                 Length = length,
                 Group = hasGroup ? new
                 {
-                    Name = group.Name.ToString(),
+                    Name = group!.Name,
                     group.ConsumerCount,
                     Pending = group.PendingMessageCount,
                     LastDeliveredId = group.LastDeliveredId.ToString(),

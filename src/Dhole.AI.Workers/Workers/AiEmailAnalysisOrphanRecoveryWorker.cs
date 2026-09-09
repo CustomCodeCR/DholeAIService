@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CustomCodeFramework.Workers.Abstractions;
 using Dhole.AI.Domain.EmailAnalysis.Enums;
 using Dhole.AI.Persistence.DbContexts;
@@ -6,10 +7,10 @@ using Microsoft.EntityFrameworkCore;
 namespace Dhole.AI.Worker.Workers;
 
 /// <summary>
-/// Recovers Processing jobs whose heartbeat stopped even when their persisted lease
-/// has not reached its original expiration yet. Container restarts used to leave such
-/// jobs blocked for the remainder of a 30-minute lease, which kept DataExtraction in
-/// "Procesando con AI" with no worker actually owning the request.
+/// Recovers Processing jobs whose worker disappeared. Besides the normal stale-heartbeat
+/// rule, startup recovery immediately requeues jobs whose last heartbeat belongs to the
+/// previous worker process. This prevents a container restart from leaving requests stuck
+/// in Processing until their persisted lease expires.
 /// </summary>
 internal sealed class AiEmailAnalysisOrphanRecoveryWorker(
     ServiceDbContext dbContext,
@@ -17,6 +18,9 @@ internal sealed class AiEmailAnalysisOrphanRecoveryWorker(
     ILogger<AiEmailAnalysisOrphanRecoveryWorker> logger
 ) : IBackgroundWorker
 {
+    private static readonly DateTime ProcessStartedAtUtc =
+        Process.GetCurrentProcess().StartTime.ToUniversalTime();
+
     public string Name => "ai.email-analysis-orphan-recovery";
 
     public async Task ExecuteAsync(
@@ -39,12 +43,25 @@ internal sealed class AiEmailAnalysisOrphanRecoveryWorker(
         );
         var now = DateTime.UtcNow;
         var staleHeartbeatBefore = now.AddSeconds(-graceSeconds);
+        // Leave one second of clock/precision tolerance. Any heartbeat older than this
+        // cannot have been emitted by the current worker process.
+        var previousProcessHeartbeatBefore = ProcessStartedAtUtc.AddSeconds(-1);
 
         var jobs = await dbContext.AiEmailAnalysisJobs
             .Where(job =>
                 job.Status == AiEmailAnalysisJobStatus.Processing
-                && (!job.LastHeartbeatAtUtc.HasValue
-                    || job.LastHeartbeatAtUtc.Value < staleHeartbeatBefore)
+                && (
+                    (job.LastHeartbeatAtUtc.HasValue
+                        && (
+                            job.LastHeartbeatAtUtc.Value < staleHeartbeatBefore
+                            || job.LastHeartbeatAtUtc.Value < previousProcessHeartbeatBefore
+                        ))
+                    || (
+                        !job.LastHeartbeatAtUtc.HasValue
+                        && job.StartedAtUtc.HasValue
+                        && job.StartedAtUtc.Value < previousProcessHeartbeatBefore
+                    )
+                )
             )
             .OrderBy(job => job.LastHeartbeatAtUtc)
             .Take(100)
@@ -55,11 +72,30 @@ internal sealed class AiEmailAnalysisOrphanRecoveryWorker(
             return;
         }
 
+        var previousProcessJobs = 0;
         foreach (var job in jobs)
         {
+            var belongsToPreviousProcess =
+                (job.LastHeartbeatAtUtc.HasValue
+                    && job.LastHeartbeatAtUtc.Value < previousProcessHeartbeatBefore)
+                || (
+                    !job.LastHeartbeatAtUtc.HasValue
+                    && job.StartedAtUtc.HasValue
+                    && job.StartedAtUtc.Value < previousProcessHeartbeatBefore
+                );
+
+            if (belongsToPreviousProcess)
+            {
+                previousProcessJobs++;
+            }
+
             job.RecoverExpiredLease(
-                "AI.EmailJobHeartbeatStale",
-                $"El heartbeat del worker AI superó {graceSeconds} segundos; el trabajo fue reencolado automáticamente.",
+                belongsToPreviousProcess
+                    ? "AI.EmailJobPreviousWorkerRecovered"
+                    : "AI.EmailJobHeartbeatStale",
+                belongsToPreviousProcess
+                    ? "El proceso AI anterior terminó o fue reiniciado; el trabajo fue reencolado inmediatamente para continuar la extracción pendiente."
+                    : $"El heartbeat del worker AI superó {graceSeconds} segundos; el trabajo fue reencolado automáticamente.",
                 now
             );
         }
@@ -67,8 +103,9 @@ internal sealed class AiEmailAnalysisOrphanRecoveryWorker(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogWarning(
-            "Se reencolaron {JobCount} AI jobs sin heartbeat activo antes de que venciera su lease original.",
-            jobs.Count
+            "Se reencolaron {JobCount} AI jobs huérfanos; {PreviousProcessJobCount} pertenecían al proceso anterior.",
+            jobs.Count,
+            previousProcessJobs
         );
     }
 

@@ -28,6 +28,25 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dhole-env"
           bash .dhole-system/deploy/prepare-environments.sh /opt/dhole/.env "$RUNNER_TEMP/dhole-env"
           echo "DHOLE_ENV_FILE=$RUNNER_TEMP/dhole-env/.env.production" >> "$GITHUB_ENV"
+      - name: Capture AI runtime state before restart
+        run: |
+          set +e
+          echo "=== AI service status ==="
+          docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" ps ai-api ai-workers
+          echo "=== AI worker recent logs ==="
+          docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" logs --no-color --tail=250 ai-workers
+          echo "=== Container resources ==="
+          docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' | grep -E 'NAME|ai|ollama'
+          OLLAMA_CONTAINER="$(docker ps --format '{{.Names}}' | grep -Ei 'ollama' | head -n 1)"
+          if [ -n "$OLLAMA_CONTAINER" ]; then
+            echo "=== Ollama loaded models ==="
+            docker exec "$OLLAMA_CONTAINER" ollama ps
+            echo "=== Ollama installed models ==="
+            docker exec "$OLLAMA_CONTAINER" ollama list
+          else
+            echo "No running Ollama container found by name."
+          fi
+          set -e
       - name: Verify production server
         run: docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" config -q
       - name: Run pricing prompt integrity regressions

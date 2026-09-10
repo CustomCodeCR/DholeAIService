@@ -4,7 +4,9 @@ public static class AiConstants
 {
     public const string ServiceName = "AI";
 
-    public const int DefaultTimeoutSeconds = 300;
+    // Local Ollama/Qwen inference can take several minutes under CPU pressure or with
+    // large structured prompts. New connections therefore start with a one-hour budget.
+    public const int DefaultTimeoutSeconds = 3_600;
     public const int MinimumTimeoutSeconds = 1;
     // Long local inferences (Ollama/Qwen) can legitimately exceed the previous one-hour ceiling.
     // Keep a 30-day fail-safe so operators can run effectively unbounded jobs without creating

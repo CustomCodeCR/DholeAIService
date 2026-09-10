@@ -103,6 +103,13 @@ public static class WorkerServiceCollectionExtensions
         services.AddCustomCodeRedisStreamHandler<AiPromptTemplateInactivatedStreamHandler>();
         services.AddCustomCodeRedisStreamHandler<AiPricingEmailAnalysisRequestedStreamHandler>();
 
+        // Execution lifecycle events are emitted back into dhole.ai.events for observability.
+        // The AI worker intentionally does not react to them, but it still has to handle them
+        // so the Redis consumer can ACK the entries instead of accumulating them in the PEL.
+        services.AddCustomCodeRedisStreamHandler<IgnoreAiExecutionStartedStreamHandler>();
+        services.AddCustomCodeRedisStreamHandler<IgnoreAiExecutionCompletedStreamHandler>();
+        services.AddCustomCodeRedisStreamHandler<IgnoreAiExecutionFailedStreamHandler>();
+
         return services;
     }
 

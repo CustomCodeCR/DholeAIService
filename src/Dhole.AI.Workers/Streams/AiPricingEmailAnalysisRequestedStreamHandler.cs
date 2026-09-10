@@ -1,6 +1,8 @@
+using System.Text.Json;
 using CustomCodeFramework.Redis.Streams.Abstractions;
 using CustomCodeFramework.Redis.Streams.Messages;
 using Dhole.AI.Application.Abstractions.Auditing;
+using Dhole.AI.Application.Abstractions.Messaging;
 using Dhole.AI.Application.Auditing;
 using Dhole.AI.Domain.EmailAnalysis.Entities;
 using Dhole.AI.Domain.EmailAnalysis.Enums;
@@ -13,10 +15,16 @@ namespace Dhole.AI.Worker.Streams;
 internal sealed class AiPricingEmailAnalysisRequestedStreamHandler(
     ServiceDbContext dbContext,
     IAiAuditService audit,
+    IIntegrationEventOutboxWriter outbox,
     IConfiguration configuration,
     ILogger<AiPricingEmailAnalysisRequestedStreamHandler> logger
 ) : IRedisStreamMessageHandler
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
     public string MessageType => EmailAnalysisMessageTypes.Requested;
 
     public async Task HandleAsync(
@@ -39,23 +47,75 @@ internal sealed class AiPricingEmailAnalysisRequestedStreamHandler(
             return;
         }
 
-        // DataExtraction puede volver a publicar el mismo payload con un RequestId nuevo
-        // después de un retry. No debemos crear dos trabajos simultáneos para el mismo
-        // correo/adjunto/hash, porque ambos terminarían compitiendo por el mismo modelo local.
-        var duplicatePayload = await dbContext.AiEmailAnalysisJobs.AnyAsync(
-            item =>
+        // DataExtraction can legitimately replay the same logical payload after recovering
+        // coordination state. If the original AI job already completed, do not merely drop
+        // the new RequestId: replay the completed business result using the caller's current
+        // RequestId so DataExtraction can close its active job instead of waiting forever.
+        var duplicateJob = await dbContext.AiEmailAnalysisJobs
+            .Where(item =>
                 item.EmailMessageId == integrationEvent.EmailMessageId
                 && item.EmailAttachmentId == integrationEvent.EmailAttachmentId
                 && item.RequestHash == integrationEvent.RequestHash
-                && item.Status != AiEmailAnalysisJobStatus.Failed,
-            cancellationToken
-        );
-        if (duplicatePayload)
+                && item.Status != AiEmailAnalysisJobStatus.Failed)
+            .OrderByDescending(item => item.CreatedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (duplicateJob is not null)
         {
+            if (
+                duplicateJob.Status == AiEmailAnalysisJobStatus.Completed
+                && duplicateJob.AiExecutionId.HasValue
+                && !string.IsNullOrWhiteSpace(duplicateJob.ResultJson)
+            )
+            {
+                var parsed = JsonSerializer.Deserialize<ParsedAiPricingEmailResult>(
+                    duplicateJob.ResultJson,
+                    JsonOptions
+                ) ?? throw new InvalidOperationException(
+                    "El resultado persistido del análisis AI duplicado no pudo deserializarse."
+                );
+
+                var completedEvent = new AiPricingEmailAnalysisCompletedIntegrationEvent(
+                    Guid.NewGuid(),
+                    integrationEvent.RequestId,
+                    integrationEvent.EmailExtractionJobId,
+                    duplicateJob.Id,
+                    duplicateJob.AiExecutionId.Value,
+                    integrationEvent.CorrelationId,
+                    integrationEvent.RequestHash,
+                    parsed.Confidence,
+                    parsed.Rows,
+                    parsed.Warnings,
+                    DateTime.UtcNow
+                );
+
+                await outbox.WriteAsync(
+                    typeof(AiPricingEmailAnalysisCompletedIntegrationEvent).FullName!,
+                    EmailAnalysisMessageTypes.Completed,
+                    completedEvent,
+                    integrationEvent.CorrelationId,
+                    cancellationToken
+                );
+                await dbContext.SaveChangesAsync(cancellationToken);
+
+                logger.LogWarning(
+                    "Solicitud AI duplicada {RequestId} reutilizó resultado completado del AI job {AiJobId}; "
+                        + "correo {EmailMessageId}; RequestHash {RequestHash}.",
+                    integrationEvent.RequestId,
+                    duplicateJob.Id,
+                    integrationEvent.EmailMessageId,
+                    integrationEvent.RequestHash
+                );
+                return;
+            }
+
             logger.LogInformation(
-                "Solicitud AI duplicada ignorada. solicitud {RequestId}; correo {EmailMessageId}; "
+                "Solicitud AI duplicada ignorada porque el trabajo original sigue activo. "
+                    + "solicitud {RequestId}; AI job {AiJobId}; estado {Status}; correo {EmailMessageId}; "
                     + "adjunto {EmailAttachmentId}; RequestHash {RequestHash}; CorrelationId {CorrelationId}.",
                 integrationEvent.RequestId,
+                duplicateJob.Id,
+                duplicateJob.Status,
                 integrationEvent.EmailMessageId,
                 integrationEvent.EmailAttachmentId,
                 integrationEvent.RequestHash,

@@ -33,11 +33,15 @@ internal sealed class AiEmailAnalysisOrphanRecoveryWorker(
             return;
         }
 
+        // Use the same grace setting as the main AI email worker. Older deployments used
+        // HeartbeatRecoverySeconds, so keep it only as a compatibility fallback. Having two
+        // recovery loops with different thresholds can requeue a healthy long-running Ollama
+        // request while its heartbeat is still being maintained.
+        var configuredGraceSeconds =
+            configuration["AI:EmailJobs:LeaseRecoveryGraceSeconds"]
+            ?? configuration["AI:EmailJobs:HeartbeatRecoverySeconds"];
         var graceSeconds = Math.Clamp(
-            ReadPositiveInt(
-                configuration["AI:EmailJobs:HeartbeatRecoverySeconds"],
-                60
-            ),
+            ReadPositiveInt(configuredGraceSeconds, 120),
             30,
             600
         );

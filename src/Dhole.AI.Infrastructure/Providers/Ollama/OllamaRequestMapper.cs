@@ -6,6 +6,8 @@ namespace Dhole.AI.Infrastructure.Providers.Ollama;
 
 internal static class OllamaRequestMapper
 {
+    private const int DefaultMaximumContextTokens = 8_192;
+    private const int ContextSafetyMarginTokens = 512;
     private const int LegacyLlamaMaximumOutputTokens = 1_536;
     private const int LegacyLlamaMaximumContextTokens = 8_192;
 
@@ -100,20 +102,28 @@ internal static class OllamaRequestMapper
     )
     {
         var requested = Math.Max(128, request.MaximumOutputTokens);
-        if (!IsLegacyLlama(model))
-        {
-            return requested;
-        }
-
+        var maximumContextTokens = IsLegacyLlama(model)
+            ? LegacyLlamaMaximumContextTokens
+            : DefaultMaximumContextTokens;
         var inputCharacters = request.Messages.Sum(message => message.Content?.Length ?? 0);
         var estimatedInputTokens = (int)Math.Ceiling(inputCharacters / 3.5d);
-        var availableOutputTokens = Math.Max(128,
-            LegacyLlamaMaximumContextTokens - estimatedInputTokens - 512);
 
-        return Math.Min(
-            Math.Min(requested, LegacyLlamaMaximumOutputTokens),
-            availableOutputTokens
+        // num_predict is part of the same context window as the prompt. Do not pass the
+        // profile maximum blindly (for example 4098 input + 6000 output on an 8192 context),
+        // because Ollama will start shifting/discarding the prompt while generating and a
+        // structured extraction can then lose the original email instructions/data.
+        var availableOutputTokens = Math.Max(
+            128,
+            maximumContextTokens - estimatedInputTokens - ContextSafetyMarginTokens
         );
+
+        var outputTokens = Math.Min(requested, availableOutputTokens);
+        if (IsLegacyLlama(model))
+        {
+            outputTokens = Math.Min(outputTokens, LegacyLlamaMaximumOutputTokens);
+        }
+
+        return outputTokens;
     }
 
     private static int CalculateContextWindow(
@@ -128,7 +138,7 @@ internal static class OllamaRequestMapper
         var rounded = (int)Math.Ceiling(requiredTokens / 1_024d) * 1_024;
         var maximum = IsLegacyLlama(model)
             ? LegacyLlamaMaximumContextTokens
-            : 8_192;
+            : DefaultMaximumContextTokens;
 
         return Math.Clamp(rounded, 4_096, maximum);
     }

@@ -371,7 +371,7 @@ public static class AiOperationsEndpoints
             var length = await database.StreamLengthAsync(stream);
             var groups = await database.StreamGroupInfoAsync(stream);
             var group = groups.FirstOrDefault(item => item.Name == groupName);
-            var hasGroup = group is not null && !string.IsNullOrEmpty(group.Name);
+            var hasGroup = !string.IsNullOrEmpty(group.Name.ToString());
             var consumers = hasGroup
                 ? await database.StreamConsumerInfoAsync(stream, groupName)
                 : [];
@@ -383,7 +383,7 @@ public static class AiOperationsEndpoints
                 Length = length,
                 Group = hasGroup ? new
                 {
-                    Name = group!.Name,
+                    Name = group.Name.ToString(),
                     group.ConsumerCount,
                     Pending = group.PendingMessageCount,
                     LastDeliveredId = group.LastDeliveredId.ToString(),

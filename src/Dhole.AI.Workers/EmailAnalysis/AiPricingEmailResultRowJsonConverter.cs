@@ -39,6 +39,11 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
             "equipment"
         );
         var dimensions = ContainerEquipmentInterpreter.Parse(containerType);
+        var remarks = ReadString(root, "remarks", "observations", "observaciones", "conditions", "restrictions");
+        var spaceComment = MergeComments(
+            ReadString(root, "spaceComment", "space_comment", "comment", "comments"),
+            remarks
+        );
 
         return new AiPricingEmailResultRow(
             ReadString(root, "pol", "originPort", "origin_port", "portOfLoading"),
@@ -69,8 +74,8 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
             ReadDecimal(root, "totalSale"),
             ReadDecimal(root, "profit"),
             ReadDecimal(root, "margin", MaximumMarginAbsoluteValue),
-            ReadString(root, "spaceComment"),
-            ReadString(root, "remarks")
+            spaceComment,
+            remarks
         )
         {
             ContainerSize = dimensions?.Size,
@@ -112,6 +117,17 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
         WriteString(writer, "spaceComment", value.SpaceComment);
         WriteString(writer, "remarks", value.Remarks);
         writer.WriteEndObject();
+    }
+
+    private static string? MergeComments(params string?[] values)
+    {
+        var comments = values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return comments.Length == 0 ? null : string.Join(Environment.NewLine, comments);
     }
 
     private static string? ReadString(
@@ -221,8 +237,6 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
             return directValue;
         }
 
-        // Do not try to salvage overflowing JSON numeric tokens. This fallback is
-        // intended for model strings such as "$15/cntr + $50/cntr" or "USD 65".
         if (element.ValueKind != JsonValueKind.String)
         {
             return null;

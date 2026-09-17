@@ -4,6 +4,7 @@ using CustomCodeFramework.Core.Results;
 using Dhole.AI.Application.Abstractions.Repositories;
 using Dhole.AI.Application.Abstractions.Services;
 using Dhole.AI.Application.Shared;
+using Dhole.AI.Domain.Connections.Entities;
 using Dhole.AI.Domain.Models.Entities;
 using Dhole.AI.Domain.Models.Enums;
 using Dhole.AI.Domain.Profiles.Entities;
@@ -20,7 +21,9 @@ public sealed class AiModelSelector(
     : IAiModelSelector
 {
     private const string PricingEmailProfileKey = "pricing-email-analysis";
-    private const string PreferredPricingModelId = "qwen3.5:35b-a3b-q4_k_m";
+    private const string PricingDashboardProfileKey = "pricing-dashboard-analysis";
+    private const string PreferredPricingModelExternalId = "qwen3.5:35b-a3b-q4_K_M";
+    private const string PreferredPricingModelIdentity = "qwen3.5:35b-a3b-q4_k_m";
 
     public async Task<Result<IReadOnlyCollection<AiModelCandidate>>> SelectAsync(
         AiProfile profile,
@@ -29,33 +32,21 @@ public sealed class AiModelSelector(
     )
     {
         var configurations = profile.Models.OrderBy(item => item.Priority).ToArray();
-
-        if (configurations.Length == 0)
-        {
-            return Result.Failure<IReadOnlyCollection<AiModelCandidate>>(
-                AiApplicationErrors.NoModelAvailable
-            );
-        }
-
-        var registeredModels = await models.GetByIdsAsync(
-            configurations.Select(item => item.ModelId).ToArray(),
-            cancellationToken
-        );
-
         var activeConnections = await connections.GetActiveAsync(cancellationToken);
-
         var connectionMap = activeConnections.ToDictionary(item => item.Id);
 
+        var registeredModels = configurations.Length == 0
+            ? Array.Empty<AiModel>()
+            : await models.GetByIdsAsync(
+                configurations.Select(item => item.ModelId).ToArray(),
+                cancellationToken
+            );
         var modelMap = registeredModels.ToDictionary(item => item.Id);
 
         var candidates = configurations
             .Where(profileModel =>
                 modelMap.TryGetValue(profileModel.ModelId, out var model)
-                && !model.IsDeleted
-                && model.IsActive
-                && model.Status != AiModelStatus.Unavailable
-                && model.Supports(requiredCapability)
-                && connectionMap.ContainsKey(model.ConnectionId)
+                && IsUsable(model, requiredCapability, connectionMap)
             )
             .Select(profileModel =>
             {
@@ -68,21 +59,61 @@ public sealed class AiModelSelector(
                     profileModel.IsFallback
                 );
             })
-            .ToArray();
+            .ToList();
 
-        if (candidates.Length == 0)
+        // Pricing and tariff extraction must use the model provisioned specifically for
+        // this workload even if the persisted profile was created before that model was
+        // downloaded. This lets the next execution adopt Qwen3.5 without requiring a
+        // manual profile edit or database reseed after Ollama discovers the model.
+        if (IsPricingProfile(profile))
+        {
+            foreach (var connection in activeConnections)
+            {
+                var preferredModel = await models.GetByExternalModelIdAsync(
+                    connection.Id,
+                    PreferredPricingModelExternalId,
+                    cancellationToken
+                );
+
+                if (
+                    preferredModel is null
+                    || candidates.Any(item => item.Model.Id == preferredModel.Id)
+                    || !IsUsable(preferredModel, requiredCapability, connectionMap)
+                )
+                {
+                    continue;
+                }
+
+                candidates.Add(
+                    new AiModelCandidate(
+                        preferredModel,
+                        connectionMap[preferredModel.ConnectionId],
+                        0,
+                        false
+                    )
+                );
+            }
+        }
+
+        if (candidates.Count == 0)
         {
             return Result.Failure<IReadOnlyCollection<AiModelCandidate>>(
-                AiApplicationErrors.ModelCapabilityNotSupported
+                configurations.Length == 0
+                    ? AiApplicationErrors.NoModelAvailable
+                    : AiApplicationErrors.ModelCapabilityNotSupported
             );
         }
 
         var ordered = profile.RoutingMode switch
         {
+            AiRoutingMode.Fixed when IsPricingProfile(profile) => candidates
+                .OrderBy(GetPricingModelRank)
+                .ThenBy(item => item.Priority),
+
             AiRoutingMode.Fixed => candidates.OrderBy(item => item.Priority),
 
-            AiRoutingMode.PriorityFallback when IsPricingEmailProfile(profile) => candidates
-                .OrderBy(GetPricingExtractionModelRank)
+            AiRoutingMode.PriorityFallback when IsPricingProfile(profile) => candidates
+                .OrderBy(GetPricingModelRank)
                 .ThenBy(item => item.IsFallback)
                 .ThenBy(item => item.Priority),
 
@@ -90,12 +121,26 @@ public sealed class AiModelSelector(
                 .OrderBy(item => item.IsFallback)
                 .ThenBy(item => item.Priority),
 
+            AiRoutingMode.LocalFirst when IsPricingProfile(profile) => candidates
+                .OrderBy(GetPricingModelRank)
+                .ThenByDescending(item => item.Model.IsLocal)
+                .ThenBy(item => item.Priority),
+
             AiRoutingMode.LocalFirst => candidates
                 .OrderByDescending(item => item.Model.IsLocal)
                 .ThenBy(item => item.Priority),
 
+            AiRoutingMode.LowestCost when IsPricingProfile(profile) => candidates
+                .OrderBy(GetPricingModelRank)
+                .ThenBy(item => CalculateCostScore(item.Model))
+                .ThenBy(item => item.Priority),
+
             AiRoutingMode.LowestCost => candidates
                 .OrderBy(item => CalculateCostScore(item.Model))
+                .ThenBy(item => item.Priority),
+
+            _ when IsPricingProfile(profile) => candidates
+                .OrderBy(GetPricingModelRank)
                 .ThenBy(item => item.Priority),
 
             _ => candidates.OrderBy(item => item.Priority),
@@ -119,7 +164,7 @@ public sealed class AiModelSelector(
         // Pricing keeps Qwen3.5 as the primary model, but always preserves one sequential
         // fallback candidate when available. This does not increase job concurrency and
         // therefore does not make the CPU-only Ollama server load two models in parallel.
-        if (IsPricingEmailProfile(profile) && candidates.Length > 1)
+        if (IsPricingProfile(profile) && candidates.Count > 1)
         {
             maximumCandidates = Math.Max(maximumCandidates, 2);
         }
@@ -129,16 +174,26 @@ public sealed class AiModelSelector(
         );
     }
 
-    private static bool IsPricingEmailProfile(AiProfile profile) =>
-        string.Equals(profile.Key, PricingEmailProfileKey, StringComparison.OrdinalIgnoreCase);
+    private static bool IsUsable(
+        AiModel model,
+        AiModelCapability requiredCapability,
+        IReadOnlyDictionary<Guid, AiConnection> connectionMap
+    ) =>
+        !model.IsDeleted
+        && model.IsActive
+        && model.Status != AiModelStatus.Unavailable
+        && model.Supports(requiredCapability)
+        && connectionMap.ContainsKey(model.ConnectionId);
 
-    private static int GetPricingExtractionModelRank(AiModelCandidate candidate)
+    private static bool IsPricingProfile(AiProfile profile) =>
+        string.Equals(profile.Key, PricingEmailProfileKey, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(profile.Key, PricingDashboardProfileKey, StringComparison.OrdinalIgnoreCase);
+
+    private static int GetPricingModelRank(AiModelCandidate candidate)
     {
         var identity = $"{candidate.Model.ExternalModelId} {candidate.Model.Name}".ToLowerInvariant();
 
-        // This exact local model is the primary tariff-extraction model. The looser
-        // Qwen3.5 check covers environments where the display name omits the quant suffix.
-        if (identity.Contains(PreferredPricingModelId, StringComparison.Ordinal))
+        if (identity.Contains(PreferredPricingModelIdentity, StringComparison.Ordinal))
         {
             return -100;
         }
@@ -152,9 +207,8 @@ public sealed class AiModelSelector(
             return -90;
         }
 
-        // Pricing extraction is precision-sensitive. Qwen3:14B remains available as a
-        // fallback, but it must not be selected ahead of another compatible structured
-        // model because it has repeatedly copied 20DV amounts into 40DV/40HC rows.
+        // Qwen3:14B remains only as a fallback for pricing because it has repeatedly
+        // confused equipment columns and copied 20DV amounts into 40DV/40HC rows.
         if (
             identity.Contains("qwen3", StringComparison.Ordinal)
             && identity.Contains("14b", StringComparison.Ordinal)
@@ -163,8 +217,6 @@ public sealed class AiModelSelector(
             return 50;
         }
 
-        // Prefer larger extraction-capable models when they are already configured in
-        // the profile. We intentionally do not hard-code a provider for secondary models.
         var parameterRank = GetParameterRank(identity);
         if (parameterRank != 10)
         {

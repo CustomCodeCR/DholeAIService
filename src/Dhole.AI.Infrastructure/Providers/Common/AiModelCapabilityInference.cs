@@ -52,6 +52,7 @@ internal static class AiModelCapabilityInference
             "qwen2.5vl",
             "qwen3-vl",
             "qwen3vl",
+            "qwen3.5:35b-a3b",
             "pixtral",
             "internvl",
             "cogvlm",

@@ -20,6 +20,7 @@ public sealed class AiModelSelector(
     : IAiModelSelector
 {
     private const string PricingEmailProfileKey = "pricing-email-analysis";
+    private const string PreferredPricingModelId = "qwen3.5:35b-a3b-q4_k_m";
 
     public async Task<Result<IReadOnlyCollection<AiModelCandidate>>> SelectAsync(
         AiProfile profile,
@@ -127,6 +128,22 @@ public sealed class AiModelSelector(
     {
         var identity = $"{candidate.Model.ExternalModelId} {candidate.Model.Name}".ToLowerInvariant();
 
+        // This exact local model is the primary tariff-extraction model. The looser
+        // Qwen3.5 check covers environments where the display name omits the quant suffix.
+        if (identity.Contains(PreferredPricingModelId, StringComparison.Ordinal))
+        {
+            return -100;
+        }
+
+        if (
+            identity.Contains("qwen3.5", StringComparison.Ordinal)
+            && identity.Contains("35b", StringComparison.Ordinal)
+            && identity.Contains("a3b", StringComparison.Ordinal)
+        )
+        {
+            return -90;
+        }
+
         // Pricing extraction is precision-sensitive. Qwen3:14B remains available as a
         // fallback, but it must not be selected ahead of another compatible structured
         // model because it has repeatedly copied 20DV amounts into 40DV/40HC rows.
@@ -139,8 +156,7 @@ public sealed class AiModelSelector(
         }
 
         // Prefer larger extraction-capable models when they are already configured in
-        // the profile. We intentionally do not hard-code a provider: the registered
-        // inventory can be local or remote and changes by environment.
+        // the profile. We intentionally do not hard-code a provider for secondary models.
         var parameterRank = GetParameterRank(identity);
         if (parameterRank != 10)
         {

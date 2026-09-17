@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using CustomCodeFramework.Core.Results;
 using Dhole.AI.Application.Abstractions.Repositories;
 using Dhole.AI.Application.Abstractions.Services;
@@ -165,24 +167,29 @@ public sealed class AiModelSelector(
 
     private static int GetParameterRank(string identity)
     {
-        var number = new string(
-            identity
-                .SkipWhile(character => !char.IsDigit(character))
-                .TakeWhile(character => char.IsDigit(character) || character == '.')
-                .ToArray()
-        );
+        var sizes = Regex.Matches(
+                identity,
+                @"(?<!\d)(?<size>\d+(?:\.\d+)?)\s*b(?![a-z])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+            )
+            .Cast<Match>()
+            .Select(match => decimal.TryParse(
+                match.Groups["size"].Value,
+                NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out var billions
+            ) ? billions : (decimal?)null)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .ToArray();
 
-        if (!decimal.TryParse(
-            number,
-            System.Globalization.NumberStyles.AllowDecimalPoint,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out var billions
-        ))
+        if (sizes.Length == 0)
         {
             return 10;
         }
 
-        return billions switch
+        var largestBillions = sizes.Max();
+        return largestBillions switch
         {
             >= 30m => 0,
             >= 20m => 1,

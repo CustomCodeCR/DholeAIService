@@ -6,8 +6,9 @@ namespace Dhole.AI.Infrastructure.Providers.Ollama;
 
 internal static class OllamaRequestMapper
 {
-    private const int DefaultMaximumContextTokens = 8_192;
-    private const int ContextSafetyMarginTokens = 512;
+    private const int DefaultMaximumContextTokens = 16_384;
+    private const int Qwen35MaximumContextTokens = 32_768;
+    private const int ContextSafetyMarginTokens = 1_024;
     private const int LegacyLlamaMaximumOutputTokens = 1_536;
     private const int LegacyLlamaMaximumContextTokens = 8_192;
 
@@ -56,7 +57,7 @@ internal static class OllamaRequestMapper
         };
 
         // Structured email formatting is a batch operation. Unloading the model after
-        // the request prevents two 8B fallback models from remaining in RAM together.
+        // the request prevents fallback models from remaining resident in RAM together.
         if (request.RequiresStructuredOutput)
         {
             payload["keep_alive"] = 0;
@@ -102,16 +103,13 @@ internal static class OllamaRequestMapper
     )
     {
         var requested = Math.Max(128, request.MaximumOutputTokens);
-        var maximumContextTokens = IsLegacyLlama(model)
-            ? LegacyLlamaMaximumContextTokens
-            : DefaultMaximumContextTokens;
+        var maximumContextTokens = GetMaximumContextTokens(model);
         var inputCharacters = request.Messages.Sum(message => message.Content?.Length ?? 0);
         var estimatedInputTokens = (int)Math.Ceiling(inputCharacters / 3.5d);
 
-        // num_predict is part of the same context window as the prompt. Do not pass the
-        // profile maximum blindly (for example 4098 input + 6000 output on an 8192 context),
-        // because Ollama will start shifting/discarding the prompt while generating and a
-        // structured extraction can then lose the original email instructions/data.
+        // num_predict shares the context window with the prompt. Pricing extraction now
+        // carries source text, catalog hints and supervised feedback, so an 8K context can
+        // leave Qwen with only a few hundred output tokens and truncate the JSON response.
         var availableOutputTokens = Math.Max(
             128,
             maximumContextTokens - estimatedInputTokens - ContextSafetyMarginTokens
@@ -134,18 +132,35 @@ internal static class OllamaRequestMapper
     {
         var inputCharacters = request.Messages.Sum(message => message.Content?.Length ?? 0);
         var estimatedInputTokens = (int)Math.Ceiling(inputCharacters / 3.5d);
-        var requiredTokens = estimatedInputTokens + outputTokens + 256;
+        var requiredTokens = estimatedInputTokens + outputTokens + ContextSafetyMarginTokens;
         var rounded = (int)Math.Ceiling(requiredTokens / 1_024d) * 1_024;
-        var maximum = IsLegacyLlama(model)
-            ? LegacyLlamaMaximumContextTokens
-            : DefaultMaximumContextTokens;
+        var maximum = GetMaximumContextTokens(model);
 
         return Math.Clamp(rounded, 4_096, maximum);
+    }
+
+    private static int GetMaximumContextTokens(string model)
+    {
+        if (IsLegacyLlama(model))
+        {
+            return LegacyLlamaMaximumContextTokens;
+        }
+
+        return IsQwen35(model)
+            ? Qwen35MaximumContextTokens
+            : DefaultMaximumContextTokens;
     }
 
     private static bool RequiresLightweightJsonMode(string model)
     {
         return IsLegacyLlama(model);
+    }
+
+    private static bool IsQwen35(string model)
+    {
+        var normalized = model.Trim().ToLowerInvariant();
+        return normalized.StartsWith("qwen3.5:", StringComparison.Ordinal)
+            || normalized.Contains("qwen3.5", StringComparison.Ordinal);
     }
 
     private static bool IsLegacyLlama(string model)

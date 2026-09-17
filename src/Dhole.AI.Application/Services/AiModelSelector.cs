@@ -4,6 +4,7 @@ using CustomCodeFramework.Core.Results;
 using Dhole.AI.Application.Abstractions.Repositories;
 using Dhole.AI.Application.Abstractions.Services;
 using Dhole.AI.Application.Shared;
+using Dhole.AI.Domain.Connections.Entities;
 using Dhole.AI.Domain.Models.Entities;
 using Dhole.AI.Domain.Models.Enums;
 using Dhole.AI.Domain.Profiles.Entities;
@@ -176,7 +177,7 @@ public sealed class AiModelSelector(
     private static bool IsUsable(
         AiModel model,
         AiModelCapability requiredCapability,
-        IReadOnlyDictionary<Guid, Domain.Connections.Entities.AiConnection> connectionMap
+        IReadOnlyDictionary<Guid, AiConnection> connectionMap
     ) =>
         !model.IsDeleted
         && model.IsActive

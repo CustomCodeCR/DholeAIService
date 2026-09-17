@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using CustomCodeFramework.Core.Results;
 using Dhole.AI.Application.Abstractions.Repositories;
 using Dhole.AI.Application.Abstractions.Services;
@@ -17,6 +19,8 @@ public sealed class AiModelSelector(
 )
     : IAiModelSelector
 {
+    private const string PricingEmailProfileKey = "pricing-email-analysis";
+
     public async Task<Result<IReadOnlyCollection<AiModelCandidate>>> SelectAsync(
         AiProfile profile,
         AiModelCapability requiredCapability,
@@ -76,6 +80,11 @@ public sealed class AiModelSelector(
         {
             AiRoutingMode.Fixed => candidates.OrderBy(item => item.Priority),
 
+            AiRoutingMode.PriorityFallback when IsPricingEmailProfile(profile) => candidates
+                .OrderBy(GetPricingExtractionModelRank)
+                .ThenBy(item => item.IsFallback)
+                .ThenBy(item => item.Priority),
+
             AiRoutingMode.PriorityFallback => candidates
                 .OrderBy(item => item.IsFallback)
                 .ThenBy(item => item.Priority),
@@ -109,6 +118,85 @@ public sealed class AiModelSelector(
         return Result.Success<IReadOnlyCollection<AiModelCandidate>>(
             ordered.Take(maximumCandidates).ToArray()
         );
+    }
+
+    private static bool IsPricingEmailProfile(AiProfile profile) =>
+        string.Equals(profile.Key, PricingEmailProfileKey, StringComparison.OrdinalIgnoreCase);
+
+    private static int GetPricingExtractionModelRank(AiModelCandidate candidate)
+    {
+        var identity = $"{candidate.Model.ExternalModelId} {candidate.Model.Name}".ToLowerInvariant();
+
+        // Pricing extraction is precision-sensitive. Qwen3:14B remains available as a
+        // fallback, but it must not be selected ahead of another compatible structured
+        // model because it has repeatedly copied 20DV amounts into 40DV/40HC rows.
+        if (
+            identity.Contains("qwen3", StringComparison.Ordinal)
+            && identity.Contains("14b", StringComparison.Ordinal)
+        )
+        {
+            return 50;
+        }
+
+        // Prefer larger extraction-capable models when they are already configured in
+        // the profile. We intentionally do not hard-code a provider: the registered
+        // inventory can be local or remote and changes by environment.
+        var parameterRank = GetParameterRank(identity);
+        if (parameterRank != 10)
+        {
+            return parameterRank;
+        }
+
+        if (identity.Contains("mistral", StringComparison.Ordinal))
+        {
+            return 5;
+        }
+
+        if (identity.Contains("llama", StringComparison.Ordinal))
+        {
+            return 6;
+        }
+
+        if (identity.Contains("qwen", StringComparison.Ordinal))
+        {
+            return 8;
+        }
+
+        return 10;
+    }
+
+    private static int GetParameterRank(string identity)
+    {
+        var sizes = Regex.Matches(
+                identity,
+                @"(?<!\d)(?<size>\d+(?:\.\d+)?)\s*b(?![a-z])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+            )
+            .Cast<Match>()
+            .Select(match => decimal.TryParse(
+                match.Groups["size"].Value,
+                NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out var billions
+            ) ? billions : (decimal?)null)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .ToArray();
+
+        if (sizes.Length == 0)
+        {
+            return 10;
+        }
+
+        var largestBillions = sizes.Max();
+        return largestBillions switch
+        {
+            >= 30m => 0,
+            >= 20m => 1,
+            >= 14m => 3,
+            >= 7m => 7,
+            _ => 9,
+        };
     }
 
     private static decimal CalculateCostScore(AiModel model)

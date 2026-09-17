@@ -34,6 +34,23 @@ public sealed class AiModelRepository(ServiceDbContext dbContext)
         );
     }
 
+    public Task<AiModel?> GetByExternalModelIdAsync(
+        Guid connectionId,
+        string externalModelId,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var normalized = externalModelId.Trim();
+
+        return dbContext.AiModels.SingleOrDefaultAsync(
+            model =>
+                model.ConnectionId == connectionId
+                && EF.Functions.ILike(model.ExternalModelId, normalized)
+                && !model.IsDeleted,
+            cancellationToken
+        );
+    }
+
     public async Task<IReadOnlyCollection<AiModel>> GetByIdsAsync(
         IReadOnlyCollection<Guid> ids,
         CancellationToken cancellationToken = default

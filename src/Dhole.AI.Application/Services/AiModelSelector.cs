@@ -116,6 +116,14 @@ public sealed class AiModelSelector(
             10
         );
 
+        // Pricing keeps Qwen3.5 as the primary model, but always preserves one sequential
+        // fallback candidate when available. This does not increase job concurrency and
+        // therefore does not make the CPU-only Ollama server load two models in parallel.
+        if (IsPricingEmailProfile(profile) && candidates.Length > 1)
+        {
+            maximumCandidates = Math.Max(maximumCandidates, 2);
+        }
+
         return Result.Success<IReadOnlyCollection<AiModelCandidate>>(
             ordered.Take(maximumCandidates).ToArray()
         );

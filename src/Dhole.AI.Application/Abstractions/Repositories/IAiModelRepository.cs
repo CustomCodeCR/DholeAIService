@@ -16,6 +16,12 @@ public interface IAiModelRepository : IRepository<AiModel, Guid>
         CancellationToken cancellationToken = default
     );
 
+    Task<AiModel?> GetByExternalModelIdAsync(
+        Guid connectionId,
+        string externalModelId,
+        CancellationToken cancellationToken = default
+    );
+
     Task<IReadOnlyCollection<AiModel>> GetByIdsAsync(
         IReadOnlyCollection<Guid> ids,
         CancellationToken cancellationToken = default

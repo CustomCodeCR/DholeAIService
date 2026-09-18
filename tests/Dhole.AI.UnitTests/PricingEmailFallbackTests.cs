@@ -715,4 +715,78 @@ public sealed class PricingEmailFallbackTests
         StringAssert.Contains(PricingEmailAiExecutionFactory.JsonSchema, "\"maxItems\": 250");
     }
 
+    [TestMethod]
+    public void NormalizeForSource_MscPanama_RecoversCarrierAndValidity()
+    {
+        const string source = """
+            MEDITERRANEAN SHIPPING COMPANY PANAMA
+            TARIFARIO DE IMPORTACION DESDE ASIA VALIDO DEL 19 DE SEPTIEMBRE AL 11 DE OCTUBRE 2026
+            PORT OF DESTINATION: RODMAN
+            OCEAN FREIGHT
+            TOTAL ALL IN (FOB)
+            """;
+
+        var payload = new AiPricingEmailPayload(
+            Guid.NewGuid(),
+            null,
+            "carlosalberto.magallon@msc.com",
+            "MSC - TARIFARIO DE IMPORTACION DE ASIA A PANAMA",
+            source,
+            null,
+            "EmailBody",
+            "email-body.txt",
+            "text/plain",
+            source,
+            "correlation-id",
+            null,
+            null,
+            0m,
+            Array.Empty<AiPreviousPricingEmailRow>(),
+            Array.Empty<AiPreviousExtractionIssue>(),
+            Array.Empty<AiCatalogGroupHint>(),
+            null,
+            null
+        );
+        var parsed = new ParsedAiPricingEmailResult(
+            90m,
+            [
+                new AiPricingEmailResultRow(
+                    "Shanghai",
+                    "Rodman",
+                    null,
+                    "20DV",
+                    null,
+                    null,
+                    null,
+                    "USD",
+                    null,
+                    null,
+                    null,
+                    null,
+                    6100m,
+                    null,
+                    null,
+                    null,
+                    6439.20m,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                ),
+            ],
+            []
+        );
+
+        var result = PricingEmailAiExecutionFactory.NormalizeForSource(parsed, payload);
+        var row = result.Rows.Single();
+
+        Assert.AreEqual("MSC", row.Carrier);
+        Assert.AreEqual(new DateTime(2026, 9, 19), row.ValidFrom);
+        Assert.AreEqual(new DateTime(2026, 10, 11), row.ValidTo);
+        Assert.IsTrue(result.Warnings.Any(item =>
+            item.Contains("Carrier MSC", StringComparison.OrdinalIgnoreCase)
+        ));
+    }
+
 }

@@ -482,6 +482,7 @@ internal static class PricingEmailAiExecutionFactory
         }
 
         var isMaritimeTariff = IsMaritimeTariffSource(source);
+        var isMscPanamaTariff = IsMscPanamaTariffSource(source);
         var isLclTariff = IsLclTariffSource(source);
         var isNarrativeNac = IsNarrativeNacSource(source);
         var inferredContainerType = isLclTariff
@@ -493,6 +494,7 @@ internal static class PricingEmailAiExecutionFactory
         var promotedPod = false;
         var repairedValidity = false;
         var repairedAgent = false;
+        var repairedCarrier = false;
 
         var rows = result.Rows
             .Select(row =>
@@ -534,6 +536,13 @@ internal static class PricingEmailAiExecutionFactory
                     repairedAgent = true;
                 }
 
+                var carrier = row.Carrier;
+                if (isMscPanamaTariff && string.IsNullOrWhiteSpace(carrier))
+                {
+                    carrier = "MSC";
+                    repairedCarrier = true;
+                }
+
                 return row with
                 {
                     Poe = string.IsNullOrWhiteSpace(poe) ? null : poe.Trim(),
@@ -542,6 +551,7 @@ internal static class PricingEmailAiExecutionFactory
                         ? null
                         : containerType.Trim(),
                     Agent = string.IsNullOrWhiteSpace(agent) ? null : agent.Trim(),
+                    Carrier = string.IsNullOrWhiteSpace(carrier) ? null : carrier.Trim(),
                     ValidFrom = validFrom,
                     ValidTo = validTo,
                 };
@@ -576,6 +586,13 @@ internal static class PricingEmailAiExecutionFactory
         {
             warnings.Add(
                 $"Agent global del documento aplicado a filas incompletas: {documentAgent}."
+            );
+        }
+
+        if (repairedCarrier)
+        {
+            warnings.Add(
+                "Carrier MSC recuperado de la identidad explícita MEDITERRANEAN SHIPPING COMPANY del tarifario."
             );
         }
 
@@ -666,6 +683,21 @@ internal static class PricingEmailAiExecutionFactory
             return (
                 TryCreateNamedMonthDate(englishFromDay, english.Groups["fromMonth"].Value, englishYear),
                 TryCreateNamedMonthDate(englishToDay, english.Groups["toMonth"].Value, englishYear)
+            );
+        }
+
+        var spanishValid = Regex.Match(
+            source,
+            @"(?is)\bV[ÁA]LIDO\s+DEL(?:\s+DEL)?\s+(?<fromDay>\d{1,2})\s+DE\s+(?<fromMonth>[A-Za-zÁÉÍÓÚÑáéíóúñ]+)\s+AL\s+(?<toDay>\d{1,2})\s+DE\s+(?<toMonth>[A-Za-zÁÉÍÓÚÑáéíóúñ]+)\s+(?:DE\s+)?(?<year>\d{4})"
+        );
+        if (spanishValid.Success
+            && int.TryParse(spanishValid.Groups["fromDay"].Value, out var validFromDay)
+            && int.TryParse(spanishValid.Groups["toDay"].Value, out var validToDay)
+            && int.TryParse(spanishValid.Groups["year"].Value, out var validYear))
+        {
+            return (
+                TryCreateNamedMonthDate(validFromDay, spanishValid.Groups["fromMonth"].Value, validYear),
+                TryCreateNamedMonthDate(validToDay, spanishValid.Groups["toMonth"].Value, validYear)
             );
         }
 
@@ -1313,6 +1345,22 @@ internal static class PricingEmailAiExecutionFactory
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
         return clean.Length == 0 ? null : string.Join(' ', clean);
+    }
+
+    private static bool IsMscPanamaTariffSource(string? source)
+    {
+        return !string.IsNullOrWhiteSpace(source)
+            && Regex.IsMatch(
+                source,
+                @"\bMEDITERRANEAN\s+SHIPPING\s+COMPANY\b|\bMSC\s*-\s*TARIFARIO\b",
+                RegexOptions.IgnoreCase
+            )
+            && Regex.IsMatch(
+                source,
+                @"PORT\s+OF\s+DESTINATION\s*:",
+                RegexOptions.IgnoreCase
+            )
+            && source.Contains("OCEAN FREIGHT", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsLclTariffSource(string? source)

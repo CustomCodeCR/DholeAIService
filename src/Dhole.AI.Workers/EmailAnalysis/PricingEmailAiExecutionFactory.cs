@@ -25,6 +25,7 @@ internal static class PricingEmailAiExecutionFactory
         "NAVIERA", "FREIGHT", "FLETE", "USD", "EUR", "CRC", "VALID",
         "VIGENCIA", "TRANSIT", "FREE DAYS", "DIAS LIBRES", "AGENT", "AGENTE",
         "COMM", "COMMODITY", "NAC", "ARB", "SUBJECT TO", "BELOW THE DETAILS", "SPACE",
+        "LCL", "CBM", "CFS", "RATE PER CBM", "MINIMUM", "ROUTE", "RUTA", "COUNTRY",
     ];
 
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
@@ -234,6 +235,9 @@ internal static class PricingEmailAiExecutionFactory
                 {
                     "Devuelve solo el JSON del esquema; no inventes valores.",
                     "Procesa también tarifas LCL y terrestres. Conserva la unidad publicada (W/M, CBM, tonelada, kg, mínimo) en remarks; no conviertas tarifas unitarias en totales por contenedor ni uses el mínimo como tarifa unitaria.",
+                    "Si el documento dice LCL, RATE PER CBM o CFS TO CFS, usa containerType=LCL. Para LCL carrier puede ser null y POE puede ser null cuando la fuente no publica una naviera o puerto de entrada explícitos; no inventes ninguno.",
+                    "En una tabla LCL COUNTRY / ORIGIN / RATE PER CBM / MINIMUM / T/T / ROUTE, COUNTRY es contexto geográfico, ORIGIN es el POL/CFS real, RATE PER CBM es oceanFreight, T/T es transitDays y ROUTE se conserva en remarks.",
+                    "En una tabla LCL ORIGEN / CFS CARGUE / TARIFA / MIN / T/T / RUTA, CFS CARGUE es el POL/CFS real y TARIFA es oceanFreight. No uses el país de la primera columna como puerto si existe un CFS de cargue más específico.",
                     "En un correo con varios tarifarios, relaciona cada vigencia del cuerpo con el adjunto por su ruta, región y modalidad. Asia y Oceanía hasta 15/09/2026 no implica que los demás adjuntos venzan ese día. No asignes una fecha global cuando existen varias vigencias distintas.",
                     "El cuerpo que solo enumera adjuntos y vigencias aporta contexto, no filas con montos. No inventes naviera, equipo, fecha inicial ni monto para completar campos requeridos; conserva null y advierte qué dato falta.",
                     "Tu responsabilidad termina en extracción semántica. Conserva los valores observados en la fuente; DataExtraction normaliza catálogos, equipos, rutas, moneda, fechas y reglas de negocio antes de Pricing.",
@@ -477,10 +481,13 @@ internal static class PricingEmailAiExecutionFactory
         }
 
         var isMaritimeTariff = IsMaritimeTariffSource(source);
+        var isLclTariff = IsLclTariffSource(source);
         var isNarrativeNac = IsNarrativeNacSource(source);
-        var inferredContainerType = isNarrativeNac
-            ? InferContainerTypeFromSource(source) ?? "40HC"
-            : null;
+        var inferredContainerType = isLclTariff
+            ? "LCL"
+            : isNarrativeNac
+                ? InferContainerTypeFromSource(source) ?? "40HC"
+                : null;
         var inferredContainer = false;
         var promotedPod = false;
         var repairedValidity = false;
@@ -544,7 +551,9 @@ internal static class PricingEmailAiExecutionFactory
         if (inferredContainer)
         {
             warnings.Add(
-                $"containerType inferido como {inferredContainerType} para la oferta narrativa MSC/ONE NAC."
+                isLclTariff
+                    ? "containerType inferido como LCL a partir de la modalidad explícita del documento."
+                    : $"containerType inferido como {inferredContainerType} para la oferta narrativa MSC/ONE NAC."
             );
         }
 
@@ -589,15 +598,19 @@ internal static class PricingEmailAiExecutionFactory
             return (null, null);
         }
 
+        var range = FindDocumentDateRange(source);
+
         return (
-            FindDocumentDate(
-                source,
-                @"Effective(?:\s+Date)?|Effective\s+From|Valid(?:ity)?\s+From|Vigencia\s+Desde"
-            ),
-            FindDocumentDate(
-                source,
-                @"Expiration(?:\s+Date)?|Expiry(?:\s+Date)?|Valid(?:ity)?\s+To|Valid\s+Until|Vigencia\s+Hasta"
-            )
+            range.ValidFrom
+                ?? FindDocumentDate(
+                    source,
+                    @"Effective(?:\s+Date)?|Effective\s+From|Valid(?:ity)?\s+From|Vigencia\s+Desde"
+                ),
+            range.ValidTo
+                ?? FindDocumentDate(
+                    source,
+                    @"Expiration(?:\s+Date)?|Expiry(?:\s+Date)?|Valid(?:ity)?\s+To|Valid\s+Until|Vigencia\s+Hasta"
+                )
         );
     }
 
@@ -634,6 +647,75 @@ internal static class PricingEmailAiExecutionFactory
         );
 
         return hasAddress && hasContact && hasQuotationRef ? "PlusCargo" : null;
+    }
+
+    private static (DateTime? ValidFrom, DateTime? ValidTo) FindDocumentDateRange(
+        string source
+    )
+    {
+        var english = Regex.Match(
+            source,
+            @"(?is)\bValid\s+from\s+(?<fromMonth>[A-Za-z]+)\s+(?<fromDay>\d{1,2})(?:st|nd|rd|th)?\s+(?:to|through|-)\s+(?<toMonth>[A-Za-z]+)\s+(?<toDay>\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(?<year>\d{4})"
+        );
+        if (english.Success
+            && int.TryParse(english.Groups["fromDay"].Value, out var englishFromDay)
+            && int.TryParse(english.Groups["toDay"].Value, out var englishToDay)
+            && int.TryParse(english.Groups["year"].Value, out var englishYear))
+        {
+            return (
+                TryCreateNamedMonthDate(englishFromDay, english.Groups["fromMonth"].Value, englishYear),
+                TryCreateNamedMonthDate(englishToDay, english.Groups["toMonth"].Value, englishYear)
+            );
+        }
+
+        var spanish = Regex.Match(
+            source,
+            @"(?is)\b(?:VALIDEZ|VIGENCIA)\s*:?\s*(?<fromDay>\d{1,2})\s+DE\s+(?<fromMonth>[A-Za-zÁÉÍÓÚÑáéíóúñ]+)(?:\s+DE\s+(?<fromYear>\d{4}))?\s+(?:AL|A|HASTA|-)\s+(?<toDay>\d{1,2})\s+DE\s+(?<toMonth>[A-Za-zÁÉÍÓÚÑáéíóúñ]+)\s+DE\s+(?<toYear>\d{4})"
+        );
+        if (spanish.Success
+            && int.TryParse(spanish.Groups["fromDay"].Value, out var spanishFromDay)
+            && int.TryParse(spanish.Groups["toDay"].Value, out var spanishToDay)
+            && int.TryParse(spanish.Groups["toYear"].Value, out var spanishToYear))
+        {
+            var spanishFromYear = int.TryParse(
+                spanish.Groups["fromYear"].Value,
+                out var explicitFromYear
+            )
+                ? explicitFromYear
+                : spanishToYear;
+
+            return (
+                TryCreateNamedMonthDate(spanishFromDay, spanish.Groups["fromMonth"].Value, spanishFromYear),
+                TryCreateNamedMonthDate(spanishToDay, spanish.Groups["toMonth"].Value, spanishToYear)
+            );
+        }
+
+        return (null, null);
+    }
+
+    private static DateTime? TryCreateNamedMonthDate(int day, string month, int year)
+    {
+        var cultures = new[]
+        {
+            CultureInfo.GetCultureInfo("en-US"),
+            CultureInfo.GetCultureInfo("es-CR"),
+            CultureInfo.GetCultureInfo("es-ES"),
+            CultureInfo.InvariantCulture,
+        };
+
+        foreach (var culture in cultures)
+        {
+            if (DateTime.TryParse(
+                    $"{day} {month} {year}",
+                    culture,
+                    DateTimeStyles.AllowWhiteSpaces,
+                    out var parsed))
+            {
+                return parsed.Date;
+            }
+        }
+
+        return null;
     }
 
     private static DateTime? FindDocumentDate(string source, string labelPattern)
@@ -1230,6 +1312,16 @@ internal static class PricingEmailAiExecutionFactory
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
         return clean.Length == 0 ? null : string.Join(' ', clean);
+    }
+
+    private static bool IsLclTariffSource(string? source)
+    {
+        return !string.IsNullOrWhiteSpace(source)
+            && Regex.IsMatch(
+                source,
+                @"\bLCL\b|\bRATE\s+PER\s+CBM\b|\bCFS\s+(?:TO|A)\s+CFS\b",
+                RegexOptions.IgnoreCase
+            );
     }
 
     private static bool IsMaritimeTariffSource(string? source)

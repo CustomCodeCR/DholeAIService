@@ -595,4 +595,20 @@ public sealed class PricingEmailFallbackTests
         Assert.Contains("SECOND_RATE", stage.PromptJson);
     }
 
+    [TestMethod]
+    public void ExtractDocumentValidity_Pier17LclRanges()
+    {
+        var spanish = PricingEmailAiExecutionFactory.ExtractDocumentValidity(
+            "VALIDEZ: 01 DE SEPTIEMBRE AL 30 DE SEPTIEMBRE DE 2026"
+        );
+        var english = PricingEmailAiExecutionFactory.ExtractDocumentValidity(
+            "Valid from September 16th to September 30th, 2026."
+        );
+
+        Assert.AreEqual(new DateTime(2026, 9, 1), spanish.ValidFrom);
+        Assert.AreEqual(new DateTime(2026, 9, 30), spanish.ValidTo);
+        Assert.AreEqual(new DateTime(2026, 9, 16), english.ValidFrom);
+        Assert.AreEqual(new DateTime(2026, 9, 30), english.ValidTo);
+    }
+
 }

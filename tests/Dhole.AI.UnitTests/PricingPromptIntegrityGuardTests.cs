@@ -31,6 +31,9 @@ public sealed class PricingPromptIntegrityGuardTests
         var systemPrompt = result.Value.Messages.Single(message => message.Role == "system").Content;
 
         Assert.Contains("Trata cada tabla como un esquema posicional", systemPrompt);
+        Assert.Contains("rowspan o celdas visualmente combinadas", systemPrompt);
+        Assert.Contains("POD/POE heredado de la fila anterior", systemPrompt);
+        Assert.Contains("No interpretes el carrier como POD/POE ni un monto como carrier", systemPrompt);
         Assert.Contains("Nunca copies el monto de 20' a 40DV o 40HC", systemPrompt);
         Assert.Contains("cada oceanFreight debe poder señalar una celda monetaria concreta", systemPrompt);
         Assert.Contains("Xingang y Tianjin son identidades comerciales de POL distintas", systemPrompt);

@@ -611,4 +611,108 @@ public sealed class PricingEmailFallbackTests
         Assert.AreEqual(new DateTime(2026, 9, 30), english.ValidTo);
     }
 
+    [TestMethod]
+    public void MscPanamaTariff_IsSplitByDestinationBeforeStructuredExtraction()
+    {
+        const string source = """
+            MSC - TARIFARIO DE IMPORTACION DE ASIA A PANAMA VALIDO DEL 19 DE SEPTIEMBRE AL 11 DE OCTUBRE 2026
+            MEDITERRANEAN SHIPPING COMPANY PANAMA
+            TARIFARIO DE IMPORTACION DESDE ASIA VALIDO DEL 19 DE SEPTIEMBRE AL 11 DE OCTUBRE 2026
+            PORT OF LOADING
+            PORT OF DESTINATION: RODMAN
+            OCEAN FREIGHT
+            TOTAL ALL IN (FOB)
+            20-DV
+            40-DV
+            40-HC
+            Shanghai, Ningbo
+            6100
+            6500
+            6500
+            0
+            0
+            0
+            250
+            15
+            10
+            64.2
+            6,439.20
+            6,839.20
+            6,839.20
+            MEDITERRANEAN SHIPPING COMPANY PANAMA
+            TARIFARIO DE IMPORTACION DESDE ASIA VALIDO DEL DEL 19 DE SEPTIEMBRE AL 11 DE OCTUBRE 2026
+            PORT OF DESTINATION: CRISTOBAL/ COLON
+            OCEAN FREIGHT
+            TOTAL ALL IN (FOB)
+            20-DV
+            40-DV
+            40-HC
+            Shanghai, Ningbo
+            8000
+            8300
+            8300
+            0
+            0
+            0
+            297
+            250
+            8
+            10
+            64.2
+            8,629.20
+            8,929.20
+            8,929.20
+            """;
+
+        using var payloadDocument = JsonDocument.Parse("{}");
+        var response = new DataExtractionAiEmailRequestResponse(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            null,
+            "request-hash",
+            "correlation-id",
+            "pricing-email-analysis",
+            payloadDocument.RootElement.Clone(),
+            new DataExtractionAiEmailImageResponse(false, null, null)
+        );
+        var payload = new AiPricingEmailPayload(
+            Guid.NewGuid(),
+            null,
+            "carlosalberto.magallon@msc.com",
+            "MSC - TARIFARIO DE IMPORTACION DE ASIA A PANAMA",
+            source,
+            null,
+            "EmailBody",
+            "email-body.txt",
+            "text/plain",
+            source,
+            "correlation-id",
+            null,
+            null,
+            0m,
+            Array.Empty<AiPreviousPricingEmailRow>(),
+            Array.Empty<AiPreviousExtractionIssue>(),
+            Array.Empty<AiCatalogGroupHint>(),
+            null,
+            null
+        );
+
+        var stages = PricingEmailAiExecutionFactory.CreateStages(
+            response,
+            payload,
+            imageBytes: null
+        ).ToArray();
+
+        Assert.HasCount(2, stages);
+        Assert.IsTrue(stages[0].PromptJson.Contains("PORT OF DESTINATION: RODMAN"));
+        Assert.IsFalse(stages[0].PromptJson.Contains("PORT OF DESTINATION: CRISTOBAL"));
+        Assert.IsTrue(stages[1].PromptJson.Contains("PORT OF DESTINATION: CRISTOBAL/ COLON"));
+        Assert.IsFalse(stages[1].PromptJson.Contains("PORT OF DESTINATION: RODMAN"));
+        Assert.IsTrue(stages.All(stage =>
+            stage.PromptJson.Contains("No mezcles RODMAN con CRISTOBAL/COLON")
+        ));
+        StringAssert.Contains(PricingEmailAiExecutionFactory.JsonSchema, "\"maxItems\": 250");
+    }
+
 }

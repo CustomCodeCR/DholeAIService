@@ -51,7 +51,7 @@ internal static class PricingEmailAiExecutionFactory
             "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
             "rows": {
               "type": "array",
-              "maxItems": 100,
+              "maxItems": 250,
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -250,6 +250,7 @@ internal static class PricingEmailAiExecutionFactory
                     "Extrae todas las tablas tarifarias del mensaje actual; una segunda matriz del mismo correo no es historial y no debe omitirse.",
                     "El cuerpo BodyText/BodyHtml es una fuente tarifaria completa aunque no exista adjunto; no rechaces un correo por no tener PDF, Excel o imagen.",
                     "Si una tabla HTML fue convertida a texto vertical, reconstruye sus columnas usando el orden de encabezados y valores repetidos. Un encabezado PORT OF DESTINATION inicia un bloque independiente y cada bloque debe producir sus propias filas.",
+                    "En tarifarios MSC Panamá, cada PORT OF DESTINATION inicia un bloque tarifario independiente. Conserva ese destino como poe para todas las filas del bloque, usa MSC como carrier cuando MEDITERRANEAN SHIPPING COMPANY identifica el documento, OCEAN FREIGHT como oceanFreight y TOTAL ALL IN (FOB) como totalCost. No mezcles RODMAN con CRISTOBAL/COLON.",
                     "Reconoce equivalencias de equipo 20-DV/20DV/20FT-DV como 20DV, 40-DV/40DV/40FT-DV como 40DV y 40-HC/40HC como 40HC; nunca mezcles los montos entre columnas.",
                     "Si aparece ASIA BASE PORTS y el mismo correo enumera Base Ports, usa esa lista explícita de puertos como POL compacto separado por / en lugar de devolver literalmente ASIA BASE PORTS.",
                     "Cuando el proveedor publica OCEAN FREIGHT y TOTAL ALL IN, oceanFreight conserva solo el OCEAN FREIGHT y totalCost conserva exactamente el TOTAL ALL IN publicado. No conviertas totalCost en totalSale. Los cargos por BL pueden quedar en remarks aunque estén incluidos en el total publicado.",
@@ -393,7 +394,7 @@ internal static class PricingEmailAiExecutionFactory
         var rows = (response.Rows ?? [])
             .Where(HasPricingData)
             .Select(WithDefaultCurrency)
-            .Take(100)
+            .Take(250)
             .ToArray();
         if (!response.Success || rows.Length == 0)
         {
@@ -437,7 +438,7 @@ internal static class PricingEmailAiExecutionFactory
             .SelectMany(item => item.Rows)
             .GroupBy(CreateRowKey, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
-            .Take(100)
+            .Take(250)
             .ToArray();
         var warnings = results
             .SelectMany(item => item.Warnings)
@@ -1398,11 +1399,95 @@ internal static class PricingEmailAiExecutionFactory
         ) ?? string.Empty;
     }
 
+    private static IReadOnlyCollection<string> SplitMscDestinationBlocks(string value)
+    {
+        var lines = value
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (
+            lines.Length == 0
+            || !Regex.IsMatch(
+                value,
+                @"\bMEDITERRANEAN\s+SHIPPING\s+COMPANY\b|\bMSC\s*-\s*TARIFARIO\b",
+                RegexOptions.IgnoreCase
+            )
+            || !value.Contains("OCEAN FREIGHT", StringComparison.OrdinalIgnoreCase)
+            || !value.Contains("TOTAL ALL IN", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return Array.Empty<string>();
+        }
+
+        var destinationIndexes = lines
+            .Select((line, index) => new { line, index })
+            .Where(item => Regex.IsMatch(
+                item.line,
+                @"^PORT\s+OF\s+DESTINATION\s*:",
+                RegexOptions.IgnoreCase
+            ))
+            .Select(item => item.index)
+            .ToArray();
+        if (destinationIndexes.Length < 2)
+        {
+            return Array.Empty<string>();
+        }
+
+        var firstDestination = destinationIndexes[0];
+        var sharedContext = lines
+            .Take(firstDestination)
+            .Where(line =>
+                line.Contains("MEDITERRANEAN SHIPPING COMPANY", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("MSC - TARIFARIO", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("TARIFARIO DE IMPORTACION", StringComparison.OrdinalIgnoreCase)
+                || Regex.IsMatch(line, @"V[ÁA]LIDO\s+DEL", RegexOptions.IgnoreCase)
+                || line.Equals("PORT OF LOADING", StringComparison.OrdinalIgnoreCase)
+            )
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var blocks = new List<string>();
+        for (var block = 0; block < destinationIndexes.Length; block++)
+        {
+            var start = destinationIndexes[block];
+            var end = block + 1 < destinationIndexes.Length
+                ? destinationIndexes[block + 1]
+                : lines.Length;
+            var content = string.Join(
+                '\n',
+                sharedContext.Concat(lines[start..end])
+            ).Trim();
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                continue;
+            }
+
+            // This specialization exists to avoid one enormous structured response.
+            // If a single destination block is itself too large, keep the generic
+            // line-based chunking behavior instead of truncating the source.
+            if (content.Length > MaximumSourceCharactersPerStage)
+            {
+                return Array.Empty<string>();
+            }
+
+            blocks.Add(content);
+        }
+
+        return blocks;
+    }
+
     private static IReadOnlyCollection<string> SplitSourceIntoChunks(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
             return Array.Empty<string>();
+        }
+
+        var destinationBlocks = SplitMscDestinationBlocks(value);
+        if (destinationBlocks.Count > 1)
+        {
+            return destinationBlocks;
         }
 
         var lines = value
@@ -1482,7 +1567,9 @@ internal static class PricingEmailAiExecutionFactory
                 @"\b(?:pls|please)\s+consider\s+(?:the\s+)?rate\b"
                     + @"|\bpublished\s+fak\b"
                     + @"|\b(?:pls|please)\s+(?:check|see|find)\s+(?:the\s+)?(?:below\s+)?(?:the\s+)?(?:updat(?:e|ed)\s+)?rates?\b"
-                    + @"|\bupdat(?:e|ed)\s+rates?\s+for\s+(?:your\s+)?ref(?:erence)?\b",
+                    + @"|\bupdat(?:e|ed)\s+rates?\s+for\s+(?:your\s+)?ref(?:erence)?\b"
+                    + @"|\btarifario\s+de\s+importaci[oó]n\b"
+                    + @"|\bimport\s+tariff\b",
                 RegexOptions.IgnoreCase
             )
         );
@@ -1497,6 +1584,7 @@ internal static class PricingEmailAiExecutionFactory
             var line = lines[index];
             if (
                 line.StartsWith("Un saludo", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("Saludos", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("Regards", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("Best regards", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("Worldwide Logistics", StringComparison.OrdinalIgnoreCase)

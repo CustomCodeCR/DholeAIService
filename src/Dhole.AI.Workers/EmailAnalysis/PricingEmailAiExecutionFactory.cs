@@ -438,7 +438,7 @@ internal static class PricingEmailAiExecutionFactory
             .SelectMany(item => item.Rows)
             .GroupBy(CreateRowKey, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
-            .Take(250)
+            .Take(1000)
             .ToArray();
         var warnings = results
             .SelectMany(item => item.Warnings)

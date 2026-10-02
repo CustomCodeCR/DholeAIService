@@ -26,6 +26,8 @@ internal static class PricingEmailAiExecutionFactory
         "VIGENCIA", "TRANSIT", "FREE DAYS", "DIAS LIBRES", "AGENT", "AGENTE",
         "COMM", "COMMODITY", "NAC", "ARB", "SUBJECT TO", "BELOW THE DETAILS", "SPACE",
         "LCL", "CBM", "CFS", "RATE PER CBM", "MINIMUM", "ROUTE", "RUTA", "COUNTRY",
+        "AIR", "AEREO", "AÉREO", "AIRLINE", "AEROLINEA", "AEROLÍNEA", "KG/VOL",
+        "FLETE +100", "FLETE +300", "FLETE +500", "BACK TO BACK", "B2B", "MIA", "MAD", "SJO",
     ];
 
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
@@ -221,7 +223,7 @@ internal static class PricingEmailAiExecutionFactory
         var prompt = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "pricing-email-v14-complete-attachment",
+                taskVersion = "pricing-email-v15-air-lcl",
                 stage = new
                 {
                     name = stage.Name,
@@ -234,7 +236,11 @@ internal static class PricingEmailAiExecutionFactory
                 rules = new[]
                 {
                     "Devuelve solo el JSON del esquema; no inventes valores.",
-                    "Procesa también tarifas LCL y terrestres. Conserva la unidad publicada (W/M, CBM, tonelada, kg, mínimo) en remarks; no conviertas tarifas unitarias en totales por contenedor ni uses el mínimo como tarifa unitaria.",
+                    "Procesa también tarifas LCL, aéreas y terrestres. Conserva la unidad publicada (W/M, CBM, KG/VOL, tonelada, kg, mínimo) en remarks; no conviertas tarifas unitarias en totales por contenedor ni uses el mínimo como tarifa unitaria.",
+                    "Si la fuente dice AEREO/AÉREO/AIR, KG/VOL, AIRLINE/AEROLÍNEA o publica columnas Mínimo +100 +300 +500, usa containerType=AIR. No lo clasifiques como LCL marítimo ni FCL.",
+                    "En tarifas aéreas, pol y poe son aeropuertos. Prefiere códigos IATA explícitos. Para tarifarios PIER 17 de Miami a Costa Rica usa MIA como pol y SJO como poe cuando esa ruta queda respaldada por subject/emailContext/adjunto; para España/Madrid usa MAD -> SJO.",
+                    "En matrices aéreas con Mínimo, Flete +100, +300 y +500, oceanFreight debe ser el valor +100. Conserva Mínimo, +300 y +500 en remarks junto con la base KG/VOL. No uses SED, pickup/recolecta, DGD, courier, inspecciones ni cargos locales como oceanFreight.",
+                    "En tarifa aérea carrier es la aerolínea únicamente cuando aparece explícita. agent es el NVOCC/emisor: si la evidencia identifica PIER 17, usa Pier17 como agent. Conserva Consolidado o Back to Back/B2B en remarks.",
                     "Si el documento dice LCL, RATE PER CBM o CFS TO CFS, usa containerType=LCL. Para LCL carrier puede ser null y POE puede ser null cuando la fuente no publica una naviera o puerto de entrada explícitos; no inventes ninguno.",
                     "En una tabla LCL COUNTRY / ORIGIN / RATE PER CBM / MINIMUM / T/T / ROUTE, COUNTRY es contexto geográfico, ORIGIN es el POL/CFS real, RATE PER CBM es oceanFreight, T/T es transitDays y ROUTE se conserva en remarks.",
                     "En una tabla LCL ORIGEN / CFS CARGUE / TARIFA / MIN / T/T / RUTA, CFS CARGUE es el POL/CFS real y TARIFA es oceanFreight. No uses el país de la primera columna como puerto si existe un CFS de cargue más específico.",
@@ -462,7 +468,31 @@ internal static class PricingEmailAiExecutionFactory
         var source = SelectNewestPricingSection(
             FirstNotEmpty(payload.SourceContent, payload.BodyText, payload.BodyHtml)
         );
+        var emailContext = SelectNewestPricingSection(
+            FirstNotEmpty(payload.BodyText, payload.BodyHtml)
+        );
+        var semanticSource = string.Join(
+            "
+",
+            new[] { payload.Subject, emailContext, source }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+        );
         var documentValidity = ExtractDocumentValidity(source);
+        if (!documentValidity.ValidFrom.HasValue || !documentValidity.ValidTo.HasValue)
+        {
+            var emailValidity = ExtractDocumentValidity(
+                string.Join(
+                    "
+",
+                    new[] { payload.Subject, emailContext }
+                        .Where(value => !string.IsNullOrWhiteSpace(value))
+                )
+            );
+            documentValidity = (
+                documentValidity.ValidFrom ?? emailValidity.ValidFrom,
+                documentValidity.ValidTo ?? emailValidity.ValidTo
+            );
+        }
         var documentAgent = InferDocumentAgent(payload, source);
 
         // Local models can understand this WWL contract but still mix the paired
@@ -481,26 +511,51 @@ internal static class PricingEmailAiExecutionFactory
             return reconstructedNac;
         }
 
-        var isMaritimeTariff = IsMaritimeTariffSource(source);
+        var isAirTariff = IsAirTariffSource(semanticSource);
+        var airRoute = InferAirRoute(semanticSource);
+        var isMaritimeTariff = !isAirTariff && IsMaritimeTariffSource(source);
         var isMscPanamaTariff = IsMscPanamaTariffSource(source);
-        var isLclTariff = IsLclTariffSource(source);
+        var isLclTariff = !isAirTariff && IsLclTariffSource(source);
         var isNarrativeNac = IsNarrativeNacSource(source);
-        var inferredContainerType = isLclTariff
-            ? "LCL"
-            : isNarrativeNac
-                ? InferContainerTypeFromSource(source) ?? "40HC"
-                : null;
+        var inferredContainerType = isAirTariff
+            ? "AIR"
+            : isLclTariff
+                ? "LCL"
+                : isNarrativeNac
+                    ? InferContainerTypeFromSource(source) ?? "40HC"
+                    : null;
         var inferredContainer = false;
         var promotedPod = false;
         var repairedValidity = false;
         var repairedAgent = false;
         var repairedCarrier = false;
+        var repairedAirRoute = false;
 
         var rows = result.Rows
             .Select(row =>
             {
+                var pol = row.Pol;
                 var poe = row.Poe;
                 var pod = row.Pod;
+
+                if (isAirTariff)
+                {
+                    var resolvedPol = FirstNotEmpty(pol, airRoute.Origin);
+                    var resolvedPoe = FirstNotEmpty(poe, pod, airRoute.Destination);
+                    repairedAirRoute =
+                        repairedAirRoute
+                        || (!string.Equals(pol, resolvedPol, StringComparison.OrdinalIgnoreCase)
+                            && !string.IsNullOrWhiteSpace(resolvedPol))
+                        || (!string.Equals(poe, resolvedPoe, StringComparison.OrdinalIgnoreCase)
+                            && !string.IsNullOrWhiteSpace(resolvedPoe));
+
+                    pol = resolvedPol;
+                    poe = resolvedPoe;
+                    if (!string.IsNullOrWhiteSpace(pod) && !string.IsNullOrWhiteSpace(poe))
+                    {
+                        pod = null;
+                    }
+                }
                 if (isMaritimeTariff && !string.IsNullOrWhiteSpace(pod))
                 {
                     // Regla Dhole: POD en una tarifa marítima significa Port of
@@ -513,6 +568,14 @@ internal static class PricingEmailAiExecutionFactory
 
                 var containerType = row.ContainerType;
                 if (
+                    isAirTariff
+                    && !string.Equals(containerType, "AIR", StringComparison.OrdinalIgnoreCase)
+                )
+                {
+                    containerType = "AIR";
+                    inferredContainer = true;
+                }
+                else if (
                     string.IsNullOrWhiteSpace(containerType)
                     && !string.IsNullOrWhiteSpace(inferredContainerType)
                 )
@@ -545,6 +608,7 @@ internal static class PricingEmailAiExecutionFactory
 
                 return row with
                 {
+                    Pol = string.IsNullOrWhiteSpace(pol) ? null : pol.Trim(),
                     Poe = string.IsNullOrWhiteSpace(poe) ? null : poe.Trim(),
                     Pod = string.IsNullOrWhiteSpace(pod) ? null : pod.Trim(),
                     ContainerType = string.IsNullOrWhiteSpace(containerType)
@@ -562,9 +626,11 @@ internal static class PricingEmailAiExecutionFactory
         if (inferredContainer)
         {
             warnings.Add(
-                isLclTariff
-                    ? "containerType inferido como LCL a partir de la modalidad explícita del documento."
-                    : $"containerType inferido como {inferredContainerType} para la oferta narrativa MSC/ONE NAC."
+                isAirTariff
+                    ? "containerType normalizado como AIR a partir de la modalidad aérea/KG-VOL del tarifario."
+                    : isLclTariff
+                        ? "containerType inferido como LCL a partir de la modalidad explícita del documento."
+                        : $"containerType inferido como {inferredContainerType} para la oferta narrativa MSC/ONE NAC."
             );
         }
 
@@ -593,6 +659,13 @@ internal static class PricingEmailAiExecutionFactory
         {
             warnings.Add(
                 "Carrier MSC recuperado de la identidad explícita MEDITERRANEAN SHIPPING COMPANY del tarifario."
+            );
+        }
+
+        if (repairedAirRoute)
+        {
+            warnings.Add(
+                $"Ruta aérea recuperada desde la evidencia del correo/adjunto: {airRoute.Origin ?? "?"} -> {airRoute.Destination ?? "?"}."
             );
         }
 
@@ -646,6 +719,17 @@ internal static class PricingEmailAiExecutionFactory
         if (Regex.IsMatch(evidence, @"\bPLUS\s*CARGO\b|\bPLUSCARGO\b", RegexOptions.IgnoreCase))
         {
             return "PlusCargo";
+        }
+
+        if (
+            Regex.IsMatch(
+                evidence,
+                @"\bPIER\s*17\b|\bPIER17\b|@(?:[a-z0-9.-]+\.)?pier17group\.com\b",
+                RegexOptions.IgnoreCase
+            )
+        )
+        {
+            return "Pier17";
         }
 
         // PlusCargo renders its logo as vector artwork in these PDFs, so it
@@ -720,6 +804,34 @@ internal static class PricingEmailAiExecutionFactory
             return (
                 TryCreateNamedMonthDate(spanishFromDay, spanish.Groups["fromMonth"].Value, spanishFromYear),
                 TryCreateNamedMonthDate(spanishToDay, spanish.Groups["toMonth"].Value, spanishToYear)
+            );
+        }
+
+        var tariffMonth = Regex.Match(
+            source,
+            @"\b(?:tarifario|tariff|rates?)\b.{0,100}?\b(?<month>enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|january|february|march|april|may|june|july|august|september|october|november|december)\b[\s/\-]*(?<year>20\d{2})\b",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline
+        );
+        var tariffMonthNumber = tariffMonth.Success
+            ? ParseMonthNumber(tariffMonth.Groups["month"].Value)
+            : null;
+        if (
+            tariffMonthNumber.HasValue
+            && int.TryParse(
+                tariffMonth.Groups["year"].Value,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var tariffYear
+            )
+        )
+        {
+            return (
+                new DateTime(tariffYear, tariffMonthNumber.Value, 1),
+                new DateTime(
+                    tariffYear,
+                    tariffMonthNumber.Value,
+                    DateTime.DaysInMonth(tariffYear, tariffMonthNumber.Value)
+                )
             );
         }
 
@@ -1361,6 +1473,303 @@ internal static class PricingEmailAiExecutionFactory
                 RegexOptions.IgnoreCase
             )
             && source.Contains("OCEAN FREIGHT", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool TryBuildPier17AirFallback(
+        AiPricingEmailPayload payload,
+        out ParsedAiPricingEmailResult result
+    )
+    {
+        result = new ParsedAiPricingEmailResult(
+            0m,
+            Array.Empty<AiPricingEmailResultRow>(),
+            Array.Empty<string>()
+        );
+
+        var source = payload.SourceContent ?? string.Empty;
+        var evidence = string.Join(
+            "
+",
+            new[] { payload.Subject, payload.BodyText, payload.BodyHtml, source }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+        );
+        if (!IsPier17AirSource(evidence))
+        {
+            return false;
+        }
+
+        var route = InferAirRoute(evidence);
+        if (string.IsNullOrWhiteSpace(route.Origin) || string.IsNullOrWhiteSpace(route.Destination))
+        {
+            return false;
+        }
+
+        var validity = ExtractDocumentValidity(source);
+        if (!validity.ValidFrom.HasValue || !validity.ValidTo.HasValue)
+        {
+            var emailValidity = ExtractDocumentValidity(evidence);
+            validity = (
+                validity.ValidFrom ?? emailValidity.ValidFrom,
+                validity.ValidTo ?? emailValidity.ValidTo
+            );
+        }
+        if (!validity.ValidFrom.HasValue || !validity.ValidTo.HasValue)
+        {
+            return false;
+        }
+
+        if (
+            !Regex.IsMatch(source, @"\b(?:Flete\s*)?\+?100\b", RegexOptions.IgnoreCase)
+            || !Regex.IsMatch(source, @"\b(?:Flete\s*)?\+?300\b", RegexOptions.IgnoreCase)
+            || !Regex.IsMatch(source, @"\b(?:Flete\s*)?\+?500\b", RegexOptions.IgnoreCase)
+        )
+        {
+            return false;
+        }
+
+        var rows = new List<AiPricingEmailResultRow>();
+        string? lastOrigin = route.Origin;
+
+        foreach (var rawLine in Regex.Split(source, @"\r?\n"))
+        {
+            var line = Regex.Replace(rawLine, @"\s+", " ").Trim();
+            if (line.Length < 10)
+            {
+                continue;
+            }
+
+            const string amountPattern =
+                @"(?:(?:US\$|USD|EUR|CRC|[$€₡])\s*)?\d+(?:[.,]\d+)?";
+            var match = Regex.Match(
+                line,
+                @"^(?:(?<origin>[A-Z]{3})\s+)?"
+                    + $@"(?<minimum>{amountPattern})\s+"
+                    + $@"(?<rate100>{amountPattern})\s+"
+                    + $@"(?<rate300>{amountPattern})\s+"
+                    + $@"(?<rate500>{amountPattern})\s+"
+                    + @"(?<suffix>.+)$",
+                RegexOptions.IgnoreCase
+            );
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var suffix = match.Groups["suffix"].Value.Trim();
+            var carrierMatch = Regex.Match(
+                suffix,
+                @"^(?<carrier>[A-Z0-9 .&'\-]{2,60}?)(?=\s+(?:(?:Directo|Direct)\b|(?:V[ií]a|Via)\b|[A-Z]{3}\s*[-–]\s*[A-Z]{3}\b|Sujeto\b|Lun(?:es)?\b|Mar(?:tes)?\b|Mi[eé](?:rcoles)?\b|Jue(?:ves)?\b|Vie(?:rnes)?\b|S[aá]b(?:ado)?s?\b|Dom(?:ingo)?\b|\d{1,2}\s*d[ií]as?\b|Consolidad[oa]\b|B2B\b|Back\s*[- ]?to\s*[- ]?back\b))",
+                RegexOptions.IgnoreCase
+            );
+            if (!carrierMatch.Success)
+            {
+                continue;
+            }
+
+            var minimum = ParseAirDecimal(match.Groups["minimum"].Value);
+            var rate100 = ParseAirDecimal(match.Groups["rate100"].Value);
+            var rate300 = ParseAirDecimal(match.Groups["rate300"].Value);
+            var rate500 = ParseAirDecimal(match.Groups["rate500"].Value);
+            if (
+                !minimum.HasValue
+                || !rate100.HasValue
+                || !rate300.HasValue
+                || !rate500.HasValue
+            )
+            {
+                continue;
+            }
+
+            if (match.Groups["origin"].Success)
+            {
+                lastOrigin = match.Groups["origin"].Value.ToUpperInvariant();
+            }
+
+            var currency = line.Contains('€')
+                || Regex.IsMatch(line, @"\bEUR\b", RegexOptions.IgnoreCase)
+                    ? "EUR"
+                    : line.Contains('₡')
+                        || Regex.IsMatch(line, @"\bCRC\b", RegexOptions.IgnoreCase)
+                            ? "CRC"
+                            : "USD";
+            var service = Regex.IsMatch(
+                suffix,
+                @"\bB2B\b|\bback\s*[- ]?to\s*[- ]?back\b",
+                RegexOptions.IgnoreCase
+            )
+                ? "AIR_BACK_TO_BACK"
+                : Regex.IsMatch(
+                    suffix,
+                    @"\bconsolidad[oa]\b|\bconsolidated\b",
+                    RegexOptions.IgnoreCase
+                )
+                    ? "AIR_CONSOLIDATED"
+                    : "AIR";
+            var transitMatch = Regex.Match(
+                suffix,
+                @"\b(?<days>\d{1,2})\s*d[ií]as?\b",
+                RegexOptions.IgnoreCase
+            );
+            var transitDays = transitMatch.Success
+                && int.TryParse(
+                    transitMatch.Groups["days"].Value,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var parsedTransit
+                )
+                    ? parsedTransit
+                    : (int?)null;
+
+            var remarks =
+                $"Servicio aéreo: {service}; Base: KG/VOL; Mínimo: {minimum.Value:0.####} {currency}; "
+                + $"+100: {rate100.Value:0.####} {currency}; "
+                + $"+300: {rate300.Value:0.####} {currency}; "
+                + $"+500: {rate500.Value:0.####} {currency}.";
+
+            rows.Add(
+                new AiPricingEmailResultRow(
+                    lastOrigin ?? route.Origin,
+                    route.Destination,
+                    null,
+                    "AIR",
+                    carrierMatch.Groups["carrier"].Value.Trim(),
+                    "Pier17",
+                    null,
+                    currency,
+                    null,
+                    transitDays,
+                    validity.ValidFrom,
+                    validity.ValidTo,
+                    rate100,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    remarks
+                )
+            );
+        }
+
+        if (rows.Count == 0)
+        {
+            return false;
+        }
+
+        result = new ParsedAiPricingEmailResult(
+            95m,
+            rows,
+            [
+                "Fallback determinístico aplicado al tarifario aéreo PIER 17; se preservaron Mínimo y escalas +100/+300/+500.",
+            ]
+        );
+        return true;
+    }
+
+    private static decimal? ParseAirDecimal(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var value = Regex.Replace(
+            raw,
+            @"(?:US\$|USD|EUR|CRC|[$€₡])",
+            string.Empty,
+            RegexOptions.IgnoreCase
+        ).Trim().Replace(" ", string.Empty, StringComparison.Ordinal);
+
+        if (value.Contains(',') && value.Contains('.'))
+        {
+            if (value.LastIndexOf(',') > value.LastIndexOf('.'))
+            {
+                value = value.Replace(".", string.Empty, StringComparison.Ordinal)
+                    .Replace(',', '.');
+            }
+            else
+            {
+                value = value.Replace(",", string.Empty, StringComparison.Ordinal);
+            }
+        }
+        else if (value.Contains(','))
+        {
+            var decimalDigits = value.Length - value.LastIndexOf(',') - 1;
+            value = decimalDigits is 1 or 2
+                ? value.Replace(',', '.')
+                : value.Replace(",", string.Empty, StringComparison.Ordinal);
+        }
+
+        return decimal.TryParse(
+            value,
+            NumberStyles.Number | NumberStyles.AllowDecimalPoint,
+            CultureInfo.InvariantCulture,
+            out var parsed
+        ) && parsed is >= 0m and <= 1_000_000_000m
+            ? parsed
+            : null;
+    }
+
+    private static bool IsPier17AirSource(string? source)
+    {
+        return !string.IsNullOrWhiteSpace(source)
+            && Regex.IsMatch(source, @"\bPIER\s*17\b|\bPIER17\b|pier17group\.com", RegexOptions.IgnoreCase)
+            && Regex.IsMatch(
+                source,
+                @"\bA[EÉ]REO\b|\bAIR\b|\bKG\s*/\s*VOL\b|\bFlete\s*\+?100\b",
+                RegexOptions.IgnoreCase
+            );
+    }
+
+    private static bool IsAirTariffSource(string? source)
+    {
+        return !string.IsNullOrWhiteSpace(source)
+            && Regex.IsMatch(
+                source,
+                @"\bA[EÉ]REO\b|\bAIR\s*(?:FREIGHT|DIVISION|CARGO)?\b|\bAIRLINE\b|\bAEROL[IÍ]NEA\b|\bKG\s*/\s*VOL\b|\bFlete\s*\+?100\b",
+                RegexOptions.IgnoreCase
+            );
+    }
+
+    private static (string? Origin, string? Destination) InferAirRoute(string? source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return (null, null);
+        }
+
+        var explicitRoute = Regex.Match(
+            source,
+            @"\b(?<from>[A-Z]{3})\b\s*\)?\s*(?:hacia|to|[-–])\s*\(?(?<to>[A-Z]{3})\b",
+            RegexOptions.IgnoreCase
+        );
+        if (explicitRoute.Success)
+        {
+            return (
+                explicitRoute.Groups["from"].Value.ToUpperInvariant(),
+                explicitRoute.Groups["to"].Value.ToUpperInvariant()
+            );
+        }
+
+        if (IsPier17AirSource(source))
+        {
+            if (Regex.IsMatch(source, @"\bMIA\b|\bMIAMI\b", RegexOptions.IgnoreCase))
+            {
+                return ("MIA", "SJO");
+            }
+
+            if (
+                Regex.IsMatch(source, @"\bMAD\b|\bMADRID\b|\bESPA[ÑN]A\b", RegexOptions.IgnoreCase)
+            )
+            {
+                return ("MAD", "SJO");
+            }
+        }
+
+        return (null, null);
     }
 
     private static bool IsLclTariffSource(string? source)

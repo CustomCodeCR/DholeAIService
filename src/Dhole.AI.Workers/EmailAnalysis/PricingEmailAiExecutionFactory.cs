@@ -16,6 +16,7 @@ internal static class PricingEmailAiExecutionFactory
     private const int MaximumPreviousRows = 10;
     private const int MaximumPreviousIssues = 16;
     private const int MaximumCatalogItemsPerGroup = 20;
+    private const int MaximumLearningExamples = 12;
     private const int MaximumStages = 64;
 
     private static readonly string[] PricingKeywords =
@@ -223,7 +224,7 @@ internal static class PricingEmailAiExecutionFactory
         var prompt = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "pricing-email-v16-air-breakpoints",
+                taskVersion = "pricing-email-v17-reviewed-mode-learning",
                 stage = new
                 {
                     name = stage.Name,
@@ -247,6 +248,7 @@ internal static class PricingEmailAiExecutionFactory
                     "En un correo con varios tarifarios, relaciona cada vigencia del cuerpo con el adjunto por su ruta, región y modalidad. Asia y Oceanía hasta 15/09/2026 no implica que los demás adjuntos venzan ese día. No asignes una fecha global cuando existen varias vigencias distintas.",
                     "El cuerpo que solo enumera adjuntos y vigencias aporta contexto, no filas con montos. No inventes naviera, equipo, fecha inicial ni monto para completar campos requeridos; conserva null y advierte qué dato falta.",
                     "Tu responsabilidad termina en extracción semántica. Conserva los valores observados en la fuente; DataExtraction normaliza catálogos, equipos, rutas, moneda, fechas y reglas de negocio antes de Pricing.",
+                    "learningExamples contiene decisiones humanas previas de Pricing. outcome=approved es ejemplo positivo y outcome=rejected es ejemplo negativo. Úsalos únicamente como precedentes para reconocer la modalidad (especialmente AIR frente a LCL marítimo); nunca copies de ellos rutas, carriers, fechas ni montos que no estén presentes en la fuente actual.",
                     "El contenido fue enfocado al mensaje tarifario más reciente. Ignora cualquier tarifa histórica, firma o conversación citada que todavía aparezca.",
                     "Si todavía aparece una cadena de respuestas o reenviados, la primera sección visible con una tarifa FCL completa es la vigente. Nunca prefieras una sección posterior solo porque tenga más filas, montos o detalle; las secciones posteriores pertenecen al historial.",
                     "POL es origen; Destination/Port of Discharge/Arrival/Gateway es POE.",
@@ -293,6 +295,20 @@ internal static class PricingEmailAiExecutionFactory
                 processingDateUtc = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 emailContext,
                 sourceContent = stage.SourceContent,
+                learningExamples = (payload.LearningExamples ?? Array.Empty<AiPricingLearningExample>())
+                    .Take(MaximumLearningExamples)
+                    .Select(example => new
+                    {
+                        example.Outcome,
+                        example.OriginPort,
+                        example.PortOfExit,
+                        example.DestinationPort,
+                        example.ContainerType,
+                        example.Carrier,
+                        example.Currency,
+                        example.OceanFreight,
+                        example.SpaceComment,
+                    }),
                 sourceImage = stage.IncludeImage && imageBytes is { Length: > 0 }
                     ? new
                     {

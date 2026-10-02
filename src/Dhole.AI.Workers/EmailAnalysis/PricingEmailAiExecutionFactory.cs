@@ -223,7 +223,7 @@ internal static class PricingEmailAiExecutionFactory
         var prompt = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "pricing-email-v15-air-lcl",
+                taskVersion = "pricing-email-v16-air-breakpoints",
                 stage = new
                 {
                     name = stage.Name,
@@ -237,11 +237,11 @@ internal static class PricingEmailAiExecutionFactory
                 {
                     "Devuelve solo el JSON del esquema; no inventes valores.",
                     "Procesa también tarifas LCL, aéreas y terrestres. Conserva la unidad publicada (W/M, CBM, KG/VOL, tonelada, kg, mínimo) en remarks; no conviertas tarifas unitarias en totales por contenedor ni uses el mínimo como tarifa unitaria.",
-                    "Si la fuente dice AEREO/AÉREO/AIR, KG/VOL, AIRLINE/AEROLÍNEA o publica columnas Mínimo +100 +300 +500, usa containerType=AIR. No lo clasifiques como LCL marítimo ni FCL.",
+                    "Si la fuente dice AEREO/AÉREO/AIR, KG/VOL, AIRLINE/AEROLÍNEA o publica una matriz aérea con Mínimo y breakpoints de peso (+100 y otros como +300, +500 o +1000), usa containerType=AIR. La palabra Consolidado/B2B en ese contexto sigue siendo servicio aéreo: no lo clasifiques como LCL marítimo ni FCL.",
                     "En tarifas aéreas, pol y poe son aeropuertos. Prefiere códigos IATA explícitos. Para tarifarios PIER 17 de Miami a Costa Rica usa MIA como pol y SJO como poe cuando esa ruta queda respaldada por subject/emailContext/adjunto; para España/Madrid usa MAD -> SJO.",
-                    "En matrices aéreas con Mínimo, Flete +100, +300 y +500, oceanFreight debe ser el valor +100. Conserva Mínimo, +300 y +500 en remarks junto con la base KG/VOL. No uses SED, pickup/recolecta, DGD, courier, inspecciones ni cargos locales como oceanFreight.",
+                    "En matrices aéreas con Mínimo y breakpoints por peso, oceanFreight debe ser el valor +100. Conserva en remarks el Mínimo y exactamente todos los breakpoints publicados, respetando sus etiquetas: por ejemplo Madrid +100/+300/+500 y Miami +100/+500/+1000. No renombres +500 como +300 ni +1000 como +500. Conserva también la base KG/VOL. No uses SED, pickup/recolecta, DGD, courier, inspecciones ni cargos locales como oceanFreight.",
                     "En tarifa aérea carrier es la aerolínea únicamente cuando aparece explícita. agent es el NVOCC/emisor: si la evidencia identifica PIER 17, usa Pier17 como agent. Conserva Consolidado o Back to Back/B2B en remarks.",
-                    "Si el documento dice LCL, RATE PER CBM o CFS TO CFS, usa containerType=LCL. Para LCL carrier puede ser null y POE puede ser null cuando la fuente no publica una naviera o puerto de entrada explícitos; no inventes ninguno.",
+                    "Si el documento dice LCL, RATE PER CBM, W/M o CFS TO CFS y no contiene evidencia aérea fuerte (AIR/AÉREO, AIRLINE/AEROLÍNEA, KG/VOL, AWB o breakpoints de peso +100/+300/+500/+1000), usa containerType=LCL. Para LCL carrier puede ser null y POE puede ser null cuando la fuente no publica una naviera o puerto de entrada explícitos; no inventes ninguno.",
                     "En una tabla LCL COUNTRY / ORIGIN / RATE PER CBM / MINIMUM / T/T / ROUTE, COUNTRY es contexto geográfico, ORIGIN es el POL/CFS real, RATE PER CBM es oceanFreight, T/T es transitDays y ROUTE se conserva en remarks.",
                     "En una tabla LCL ORIGEN / CFS CARGUE / TARIFA / MIN / T/T / RUTA, CFS CARGUE es el POL/CFS real y TARIFA es oceanFreight. No uses el país de la primera columna como puerto si existe un CFS de cargue más específico.",
                     "En un correo con varios tarifarios, relaciona cada vigencia del cuerpo con el adjunto por su ruta, región y modalidad. Asia y Oceanía hasta 15/09/2026 no implica que los demás adjuntos venzan ese día. No asignes una fecha global cuando existen varias vigencias distintas.",

@@ -789,4 +789,136 @@ public sealed class PricingEmailFallbackTests
         ));
     }
 
+    [TestMethod]
+    public void Pier17AirFallback_MiamiBuildsAirRowsWhenModelReturnsNone()
+    {
+        const string source = """
+            TARIFARIO AIR DIVISION
+            Aeropuerto Mínimo Flete +100 Flete +300 Flete +500 Aerolinea Ruta Salidas Cut-off Tránsito Servicio
+            MIA $ 75.00 $ 2.65 $ 2.45 $ 2.30 American Airlines Directo Martes Viernes 1 Días Consolidado
+            $ 175.00 $ 2.95 $ 2.75 $ 2.60 American Airlines Directo Martes Viernes 1 Días B2B
+            Tarifa aplica por KgVol
+            """;
+
+        var payload = new AiPricingEmailPayload(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "pricing3@cr.pier17group.com",
+            "Re: TARIFARIO AEREO PIER 17 MIAMI / OCTUBRE 2026",
+            "Favor notar que se adjunta el tarifario de Miami para nuestro servicio AEREO.",
+            null,
+            "Attachment",
+            "PIER17 MIAMI.pdf",
+            "application/pdf",
+            source,
+            "correlation-id",
+            "DataExtraction.ValidationFailed",
+            "missing_origin_port, missing_port_of_exit, missing_rate_amount",
+            0m,
+            Array.Empty<AiPreviousPricingEmailRow>(),
+            Array.Empty<AiPreviousExtractionIssue>(),
+            Array.Empty<AiCatalogGroupHint>(),
+            null,
+            null
+        );
+
+        var recovered = PricingEmailAiExecutionFactory.TryBuildPier17AirFallback(
+            payload,
+            out var result
+        );
+
+        Assert.IsTrue(recovered);
+        Assert.HasCount(2, result.Rows);
+
+        var consolidated = result.Rows.First();
+        Assert.AreEqual("MIA", consolidated.Pol);
+        Assert.AreEqual("SJO", consolidated.Poe);
+        Assert.AreEqual("AIR", consolidated.ContainerType);
+        Assert.AreEqual("American Airlines", consolidated.Carrier);
+        Assert.AreEqual("Pier17", consolidated.Agent);
+        Assert.AreEqual("USD", consolidated.Currency);
+        Assert.AreEqual(new DateTime(2026, 10, 1), consolidated.ValidFrom);
+        Assert.AreEqual(new DateTime(2026, 10, 31), consolidated.ValidTo);
+        Assert.AreEqual(2.65m, consolidated.OceanFreight);
+        StringAssert.Contains(consolidated.Remarks!, "Mínimo: 75");
+        StringAssert.Contains(consolidated.Remarks!, "+300: 2.45");
+        StringAssert.Contains(consolidated.Remarks!, "AIR_CONSOLIDATED");
+
+        var b2b = result.Rows.Last();
+        Assert.AreEqual(2.95m, b2b.OceanFreight);
+        StringAssert.Contains(b2b.Remarks!, "AIR_BACK_TO_BACK");
+    }
+
+    [TestMethod]
+    public void NormalizeForSource_Pier17MiamiRepairsAirRouteContainerAndAgent()
+    {
+        const string source = """
+            TARIFARIO AIR DIVISION
+            Mínimo Flete +100 Flete +300 Flete +500 Aerolinea
+            $ 75.00 $ 2.65 $ 2.45 $ 2.30 American Airlines
+            """;
+
+        var payload = new AiPricingEmailPayload(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "pricing3@cr.pier17group.com",
+            "TARIFARIO AEREO PIER 17 MIAMI / OCTUBRE 2026",
+            "Servicio AEREO de Miami.",
+            null,
+            "Attachment",
+            "MIAMI.pdf",
+            "application/pdf",
+            source,
+            "correlation-id",
+            null,
+            null,
+            0m,
+            Array.Empty<AiPreviousPricingEmailRow>(),
+            Array.Empty<AiPreviousExtractionIssue>(),
+            Array.Empty<AiCatalogGroupHint>(),
+            null,
+            null
+        );
+        var parsed = new ParsedAiPricingEmailResult(
+            80m,
+            [
+                new AiPricingEmailResultRow(
+                    null,
+                    null,
+                    null,
+                    "LCL",
+                    "American Airlines",
+                    null,
+                    null,
+                    "USD",
+                    null,
+                    null,
+                    null,
+                    null,
+                    2.65m,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "Base KG/VOL"
+                ),
+            ],
+            []
+        );
+
+        var result = PricingEmailAiExecutionFactory.NormalizeForSource(parsed, payload);
+        var row = result.Rows.Single();
+
+        Assert.AreEqual("MIA", row.Pol);
+        Assert.AreEqual("SJO", row.Poe);
+        Assert.AreEqual("AIR", row.ContainerType);
+        Assert.AreEqual("Pier17", row.Agent);
+        Assert.AreEqual(new DateTime(2026, 10, 1), row.ValidFrom);
+        Assert.AreEqual(new DateTime(2026, 10, 31), row.ValidTo);
+    }
+
 }

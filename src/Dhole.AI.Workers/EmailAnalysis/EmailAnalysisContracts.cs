@@ -130,7 +130,8 @@ internal sealed record AiPricingEmailPayload(
     IReadOnlyCollection<AiPreviousExtractionIssue> PreviousIssues,
     IReadOnlyCollection<AiCatalogGroupHint> CatalogHints,
     string? SourceImageBase64,
-    string? SourceImageMimeType
+    string? SourceImageMimeType,
+    IReadOnlyCollection<AiPricingLearningExample>? LearningExamples = null
 );
 
 internal sealed record AiPreviousPricingEmailRow(
@@ -176,6 +177,18 @@ internal sealed record AiCatalogItemHint(
     string Slug,
     string Name,
     string? Value
+);
+
+internal sealed record AiPricingLearningExample(
+    string Outcome,
+    string? OriginPort,
+    string? PortOfExit,
+    string? DestinationPort,
+    string? ContainerType,
+    string? Carrier,
+    string? Currency,
+    decimal? OceanFreight,
+    string? SpaceComment
 );
 
 internal sealed record PreparedAiEmailExecution(

@@ -351,6 +351,55 @@ internal sealed class AiEmailAnalysisWorker(
                 }
                 catch (AiEmailJobException exception)
                 {
+                    if (
+                        exception.ErrorCode.Equals(
+                            "AI.NoPricingRows",
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                        && PricingEmailAiExecutionFactory.TryBuildPier17AirFallback(
+                            payload,
+                            out var sourceFallback
+                        )
+                    )
+                    {
+                        parsedStages.Add(sourceFallback);
+                        successfulOutputs.Add(result.Value);
+
+                        await audit.PublishAsync(
+                            new AiAuditEvent(
+                                EventType: AiAuditEventTypes.EmailAnalysisOutputRecorded,
+                                Action: AiAuditActions.OutputRecorded,
+                                EntityType: AiAuditEntityTypes.EmailAnalysisJob,
+                                EntityId: job.Id,
+                                Payload: new
+                                {
+                                    Stage = "email-stage-source-fallback",
+                                    PreparedStage = preparedStage,
+                                    AiServiceInput = aiInput,
+                                    AiServiceOutput = result.Value,
+                                    ParsedOutput = sourceFallback,
+                                    RejectedModelOutput = new
+                                    {
+                                        exception.ErrorCode,
+                                        exception.Message,
+                                    },
+                                },
+                                Metadata: new
+                                {
+                                    Stage = "email-stage-source-fallback",
+                                    preparedStage.StageName,
+                                    preparedStage.StageNumber,
+                                    RowCount = sourceFallback.Rows.Count,
+                                    sourceFallback.Confidence,
+                                },
+                                CorrelationId: job.CorrelationId
+                            ),
+                            cancellationToken
+                        );
+                        await dbContext.SaveChangesAsync(cancellationToken);
+                        break;
+                    }
+
                     lastErrorCode = exception.ErrorCode;
                     lastErrorMessage = exception.Message;
                     lastErrorIsTransient = exception.IsTransient;

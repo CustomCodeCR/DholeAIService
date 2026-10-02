@@ -472,8 +472,7 @@ internal static class PricingEmailAiExecutionFactory
             FirstNotEmpty(payload.BodyText, payload.BodyHtml)
         );
         var semanticSource = string.Join(
-            "
-",
+            "\n",
             new[] { payload.Subject, emailContext, source }
                 .Where(value => !string.IsNullOrWhiteSpace(value))
         );
@@ -482,8 +481,7 @@ internal static class PricingEmailAiExecutionFactory
         {
             var emailValidity = ExtractDocumentValidity(
                 string.Join(
-                    "
-",
+                    "\n",
                     new[] { payload.Subject, emailContext }
                         .Where(value => !string.IsNullOrWhiteSpace(value))
                 )
@@ -1488,8 +1486,7 @@ internal static class PricingEmailAiExecutionFactory
 
         var source = payload.SourceContent ?? string.Empty;
         var evidence = string.Join(
-            "
-",
+            "\n",
             new[] { payload.Subject, payload.BodyText, payload.BodyHtml, source }
                 .Where(value => !string.IsNullOrWhiteSpace(value))
         );

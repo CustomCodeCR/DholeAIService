@@ -337,7 +337,8 @@ internal sealed class AiEmailAnalysisWorker(
                     await dbContext.SaveChangesAsync(cancellationToken);
 
                     if (
-                        preparedStage.StageName == "repair-deterministic-draft"
+                        (preparedStage.StageName == "repair-deterministic-draft"
+                            || preparedStage.StageName == "image-or-repair")
                         && parsedStage.Confidence >= 75m
                     )
                     {

@@ -193,19 +193,14 @@ internal sealed class AiEmailAnalysisWorker(
                 isTransient: false
             );
 
-            if (IsUnsupportedImagePayload(payload))
-            {
-                throw new AiEmailJobException(
-                    "AI.UnsupportedImageExtraction",
-                    "La extracción de imágenes está deshabilitada. Solo se admite cuerpo de correo, PDF, CSV o XLSX.",
-                    isTransient: false
-                );
-            }
+            // Multimodal image is optional: OCR text still works if the image
+            // exceeds the safe vision limit. Validate raw bytes before forwarding.
+            var imageBytes = TryDecodeVerifiedImage(payload);
 
             var preparedStages = PricingEmailAiExecutionFactory.CreateStages(
                 response,
                 payload,
-                imageBytes: null
+                imageBytes
             );
             var stageInputs = preparedStages
                 .Select(PricingEmailAiExecutionFactory.ToApplicationInput)
@@ -221,16 +216,16 @@ internal sealed class AiEmailAnalysisWorker(
                     {
                         Stage = "email-payload-prepared",
                         Job = CreateJobAuditSnapshot(job),
-                        DataExtractionResponse = response,
-                        ParsedPayload = payload,
-                        PreparedStages = preparedStages,
-                        AiServiceInputs = stageInputs,
+                        // Audit metadata, not the base64 image or binary user input.
+                        DataExtractionRequestId = response.RequestId,
+                        ParsedPayload = payload with { SourceImageBase64 = null },
+                        PreparedStageNames = preparedStages.Select(stage => stage.StageName).ToArray(),
                     },
                     Metadata: new
                     {
                         Stage = "email-payload-prepared",
-                        HasImage = false,
-                        ImageByteLength = 0,
+                        HasImage = imageBytes is { Length: > 0 },
+                        ImageByteLength = imageBytes?.Length ?? 0,
                         StageCount = preparedStages.Count,
                     },
                     CorrelationId: job.CorrelationId
@@ -1360,30 +1355,63 @@ internal sealed class AiEmailAnalysisWorker(
         return bool.TryParse(value, out var parsed) ? parsed : fallback;
     }
 
-    private static bool IsUnsupportedImagePayload(
-        AiPricingEmailPayload payload
-    )
+    private byte[]? TryDecodeVerifiedImage(AiPricingEmailPayload payload)
     {
-        if (
-            payload.SourceContentType?.StartsWith(
-                "image/",
-                StringComparison.OrdinalIgnoreCase
-            ) == true
-        )
+        if (string.IsNullOrWhiteSpace(payload.SourceImageBase64))
+            return null;
+
+        var maxBytes = Math.Min(
+            650_000,
+            ReadPositiveInt(configuration["AI:EmailJobs:MaximumVisionImageBytes"], 500_000)
+        );
+        if (payload.SourceImageBase64.Length > (maxBytes * 4 / 3) + 8)
         {
-            return true;
+            logger.LogWarning("Email AI vision image is over size limit; using OCR text only.");
+            return null;
         }
 
-        var extension = Path.GetExtension(payload.SourceName)?.ToLowerInvariant();
-        return extension
-            is ".png"
-                or ".jpg"
-                or ".jpeg"
-                or ".gif"
-                or ".webp"
-                or ".bmp"
-                or ".tif"
-                or ".tiff";
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(payload.SourceImageBase64);
+        }
+        catch (FormatException)
+        {
+            throw new AiEmailJobException(
+                "AI.InvalidVisionImage",
+                "El adjunto visual no contiene datos base64 válidos.",
+                isTransient: false
+            );
+        }
+
+        if (bytes.Length == 0 || bytes.Length > maxBytes)
+            return null;
+
+        var matchesMime = payload.SourceImageMimeType?.ToLowerInvariant() switch
+        {
+            "image/png" => bytes.Length >= 8
+                && bytes[0] == 0x89 && bytes[1] == 0x50
+                && bytes[2] == 0x4E && bytes[3] == 0x47,
+            "image/jpeg" => bytes.Length >= 3
+                && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF,
+            "image/webp" => bytes.Length >= 12
+                && bytes[0] == (byte)'R' && bytes[1] == (byte)'I'
+                && bytes[2] == (byte)'F' && bytes[3] == (byte)'F'
+                && bytes[8] == (byte)'W' && bytes[9] == (byte)'E'
+                && bytes[10] == (byte)'B' && bytes[11] == (byte)'P',
+            _ => false,
+        };
+
+        if (!matchesMime)
+        {
+            throw new AiEmailJobException(
+                "AI.InvalidVisionImageType",
+                "La imagen multimodal no coincide con el formato declarado.",
+                isTransient: false
+            );
+        }
+
+        return bytes;
     }
 
     private static int ReadPositiveInt(string? value, int fallback)

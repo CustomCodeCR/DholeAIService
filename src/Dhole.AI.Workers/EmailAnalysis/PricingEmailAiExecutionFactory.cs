@@ -135,6 +135,21 @@ internal static class PricingEmailAiExecutionFactory
                 IncludePreviousExtraction: true,
                 IncludeImage: true
             ));
+
+            // A text-only OCR fallback covers models that lack image support,
+            // or visual parses that are uncertain. Never discard OCR evidence.
+            if (!string.IsNullOrWhiteSpace(focusedSourceContent))
+            {
+                stages.Add(new StageDefinition(
+                    "ocr-text-fallback",
+                    LimitPreservingEdges(
+                        focusedSourceContent,
+                        MaximumFocusedSourceCharacters
+                    ),
+                    IncludePreviousExtraction: true,
+                    IncludeImage: false
+                ));
+            }
         }
         else if (hasPreviousRows
             && payload.PreviousRows.Count <= MaximumPreviousRows

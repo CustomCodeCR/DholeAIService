@@ -269,8 +269,8 @@ internal sealed class AiEmailAnalysisWorker(
                             Payload: new
                             {
                                 Stage = "email-stage-failed",
-                                PreparedStage = preparedStage,
-                                AiServiceInput = aiInput,
+                                PreparedStage = new { preparedStage.StageName, preparedStage.StageNumber, preparedStage.StageCount },
+                                AiServiceInput = new { preparedStage.ProfileKey, HasImage = preparedStage.ImageBytes is { Length: > 0 } },
                                 Error = result.Error,
                             },
                             Metadata: new
@@ -316,8 +316,8 @@ internal sealed class AiEmailAnalysisWorker(
                             Payload: new
                             {
                                 Stage = "email-stage-completed",
-                                PreparedStage = preparedStage,
-                                AiServiceInput = aiInput,
+                                PreparedStage = new { preparedStage.StageName, preparedStage.StageNumber, preparedStage.StageCount },
+                                AiServiceInput = new { preparedStage.ProfileKey, HasImage = preparedStage.ImageBytes is { Length: > 0 } },
                                 AiServiceOutput = result.Value,
                                 ParsedOutput = parsedStage,
                             },
@@ -369,8 +369,8 @@ internal sealed class AiEmailAnalysisWorker(
                                 Payload: new
                                 {
                                     Stage = "email-stage-source-fallback",
-                                    PreparedStage = preparedStage,
-                                    AiServiceInput = aiInput,
+                                    PreparedStage = new { preparedStage.StageName, preparedStage.StageNumber, preparedStage.StageCount },
+                                    AiServiceInput = new { preparedStage.ProfileKey, HasImage = preparedStage.ImageBytes is { Length: > 0 } },
                                     AiServiceOutput = result.Value,
                                     ParsedOutput = sourceFallback,
                                     RejectedModelOutput = new
@@ -408,8 +408,8 @@ internal sealed class AiEmailAnalysisWorker(
                             Payload: new
                             {
                                 Stage = "email-stage-output-rejected",
-                                PreparedStage = preparedStage,
-                                AiServiceInput = aiInput,
+                                PreparedStage = new { preparedStage.StageName, preparedStage.StageNumber, preparedStage.StageCount },
+                                AiServiceInput = new { preparedStage.ProfileKey, HasImage = preparedStage.ImageBytes is { Length: > 0 } },
                                 AiServiceOutput = result.Value,
                                 Error = new
                                 {

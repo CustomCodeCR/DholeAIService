@@ -64,7 +64,7 @@ jobs:
             -v "$PWD:/src" \
             -w /src \
             mcr.microsoft.com/dotnet/sdk:10.0 \
-            bash -lc 'dotnet restore tests/Dhole.AI.UnitTests/Dhole.AI.UnitTests.csproj --configfile NuGet.Config && dotnet test tests/Dhole.AI.UnitTests/Dhole.AI.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~PricingPromptIntegrityGuardTests"'
+            bash -lc 'dotnet restore tests/Dhole.AI.UnitTests/Dhole.AI.UnitTests.csproj --configfile NuGet.Config && dotnet test tests/Dhole.AI.UnitTests/Dhole.AI.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~PricingPromptIntegrityGuardTests|FullyQualifiedName~PricingImageExtractionTests"'
       - name: Build images
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

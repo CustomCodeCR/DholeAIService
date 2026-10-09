@@ -49,12 +49,21 @@ internal sealed class AiEmailAnalysisWorker(
             return;
         }
 
+        await PrepareAsync(cancellationToken);
+        await ProcessAvailableJobsAsync(cancellationToken);
+    }
+
+    internal async Task PrepareAsync(CancellationToken cancellationToken)
+    {
         dbContext.ChangeTracker.Clear();
         await ApplyConfiguredAttemptLimitAsync(cancellationToken);
         await RecoverStaleExecutionsAsync(cancellationToken);
         await RecoverFailedLeaseJobsAsync(cancellationToken);
         await RecoverExpiredLeasesAsync(cancellationToken);
+    }
 
+    internal async Task ProcessAvailableJobsAsync(CancellationToken cancellationToken)
+    {
         var maxJobs = Math.Min(
             ReadPositiveInt(configuration["AI:EmailJobs:MaxJobsPerRun"], 1),
             ReadPositiveInt(configuration["AI:EmailJobs:MaxConcurrentJobs"], 1)

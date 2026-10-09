@@ -16,7 +16,8 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
     ILogger<AiEmailAnalysisDispatcherWorker> logger
 ) : IBackgroundWorker
 {
-    private const int MaximumSafeParallelism = 4;
+    private const int MaximumConfiguredParallelism = 8;
+    private static readonly SemaphoreSlim DispatchGate = new(1, 1);
 
     public string Name => "ai.email-analysis-dispatcher";
 
@@ -37,14 +38,39 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
         var parallelism = Math.Clamp(
             configuredParallelism,
             1,
-            MaximumSafeParallelism
+            MaximumConfiguredParallelism
         );
 
-        var tasks = Enumerable.Range(0, parallelism)
-            .Select(slot => RunSlotAsync(slot, context, cancellationToken))
-            .ToArray();
+        // The scheduler can tick again while a long-running model request is active.
+        // Keep the in-process job budget bounded even if periodic executions overlap.
+        if (!await DispatchGate.WaitAsync(0, cancellationToken))
+        {
+            logger.LogDebug("AI email dispatcher is already running; skipping overlapping cycle.");
+            return;
+        }
 
-        await Task.WhenAll(tasks);
+        try
+        {
+            // Maintenance touches global job state. Run it only once, not concurrently
+            // on each isolated processing slot.
+            await using (var maintenanceScope = scopeFactory.CreateAsyncScope())
+            {
+                var maintenanceWorker =
+                    maintenanceScope.ServiceProvider.GetRequiredService<AiEmailAnalysisWorker>();
+                await maintenanceWorker.PrepareAsync(cancellationToken);
+            }
+
+            logger.LogInformation("Dispatching AI email jobs with {Parallelism} parallel slots.", parallelism);
+            var tasks = Enumerable.Range(0, parallelism)
+                .Select(slot => RunSlotAsync(slot, context, cancellationToken))
+                .ToArray();
+
+            await Task.WhenAll(tasks);
+        }
+        finally
+        {
+            DispatchGate.Release();
+        }
     }
 
     private async Task RunSlotAsync(
@@ -67,7 +93,7 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
 
             await using var scope = scopeFactory.CreateAsyncScope();
             var worker = scope.ServiceProvider.GetRequiredService<AiEmailAnalysisWorker>();
-            await worker.ExecuteAsync(context, cancellationToken);
+            await worker.ProcessAvailableJobsAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

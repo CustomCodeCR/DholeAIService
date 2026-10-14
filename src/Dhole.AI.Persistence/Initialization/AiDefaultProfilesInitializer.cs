@@ -118,11 +118,11 @@ public sealed class AiDefaultProfilesInitializer(
             RoutingMode: AiRoutingMode.LocalFirst,
             ResponseFormat: AiResponseFormat.Text,
             Temperature: 0.35m,
-            MaximumOutputTokens: 1_024,
-            TimeoutSeconds: 900,
+            MaximumOutputTokens: 512,
+            TimeoutSeconds: 80,
             JsonSchema: null,
             RequiredCapability: AiModelCapability.Chat,
-            ModelPreference: DefaultModelPreference.LocalFirst,
+            ModelPreference: DefaultModelPreference.FastChat,
             EnforceConfiguration: true
         ),
         new(
@@ -459,6 +459,14 @@ public sealed class AiDefaultProfilesInitializer(
     {
         IEnumerable<AiModel> ordered = preference switch
         {
+            // El chat interactivo requiere un modelo ligero. Evitar priorizar
+            // Qwen 35B por contexto: puede exceder el timeout del proxy público.
+            DefaultModelPreference.FastChat => models
+                .OrderByDescending(model => model.Status == AiModelStatus.Available)
+                .ThenByDescending(model => model.IsLocal)
+                .ThenBy(GetInteractiveChatModelRank)
+                .ThenBy(model => model.Name),
+
             DefaultModelPreference.FastStructured => models
                 .OrderByDescending(model => model.Status == AiModelStatus.Available)
                 .ThenByDescending(model => model.Supports(AiModelCapability.StructuredOutput))
@@ -485,6 +493,20 @@ public sealed class AiDefaultProfilesInitializer(
         };
 
         return ordered.Take(maximumModels).ToArray();
+    }
+
+    private static int GetInteractiveChatModelRank(AiModel model)
+    {
+        var identity = $"{model.ExternalModelId} {model.Name}".ToLowerInvariant();
+
+        // Estos modelos ya se encuentran instalados en Ollama y son apropiados
+        // para mensajes interactivos; los modelos grandes siguen en Pricing.
+        if (identity.Contains("llama3.2:3b", StringComparison.Ordinal)) return 0;
+        if (identity.Contains("llama3.1:8b", StringComparison.Ordinal)) return 1;
+        if (identity.Contains("llama3:8b", StringComparison.Ordinal)) return 2;
+        if (identity.Contains("qwen3:14b", StringComparison.Ordinal)) return 3;
+        if (identity.Contains("qwen3.5:35b", StringComparison.Ordinal)) return 9;
+        return 5;
     }
 
     private static int GetStructuredModelGenerationRank(AiModel model)
@@ -561,6 +583,7 @@ public sealed class AiDefaultProfilesInitializer(
         LocalFirst = 1,
         AnalysisQuality = 2,
         FastStructured = 3,
+        FastChat = 4,
     }
 
     private sealed record DefaultProfileDefinition(

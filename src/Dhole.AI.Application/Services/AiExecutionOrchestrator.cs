@@ -1198,6 +1198,15 @@ public sealed class AiExecutionOrchestrator(
                 providerCancellationToken ?? cancellationToken
             );
 
+            // Una respuesta vacía no es éxito: permite intentar el siguiente modelo
+            // configurado en el perfil en lugar de dejar al chatbot sin respuesta.
+            if (!structured && string.IsNullOrWhiteSpace(response.Content))
+            {
+                throw new InvalidOperationException(
+                    $"El modelo '{candidate.Model.ExternalModelId}' devolvió una respuesta de chat vacía."
+                );
+            }
+
             var cost = CalculateChatCost(
                 candidate.Model,
                 response.InputTokens,

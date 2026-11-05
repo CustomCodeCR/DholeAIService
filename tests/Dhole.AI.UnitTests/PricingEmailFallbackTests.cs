@@ -8,6 +8,18 @@ namespace Dhole.AI.UnitTests;
 [TestClass]
 public sealed class PricingEmailFallbackTests
 {
+    private static string DecodePrompt(string promptJson)
+    {
+        // The JSON encoder correctly escapes non-ASCII text and '+'; assert
+        // against the decoded semantic fields, not their serialized byte form.
+        using var document = JsonDocument.Parse(promptJson);
+        var root = document.RootElement;
+        var rules = root.GetProperty("rules").EnumerateArray()
+            .Select(item => item.GetString());
+        var source = root.GetProperty("sourceContent").GetString();
+        return string.Join("\n", rules) + "\n" + source;
+    }
+
     [TestMethod]
     public void NarrativeNacPrompt_RequestsCompactRowsForLocalModels()
     {
@@ -69,14 +81,14 @@ public sealed class PricingEmailFallbackTests
             imageBytes: null
         ).Single();
 
-        Assert.Contains("fcl-email-v11-body-multi-table", stage.PromptJson);
-        Assert.Contains("filas compactas", stage.PromptJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pricing-email-v17-reviewed-mode-learning", stage.PromptJson);
+        Assert.Contains("filas compactas", DecodePrompt(stage.PromptJson), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("processingDateUtc", stage.PromptJson);
-        Assert.Contains("ISPS 15/cntr + P/S 50/cntr = 65", stage.PromptJson);
+        Assert.Contains("ISPS 15/cntr + P/S 50/cntr = 65", DecodePrompt(stage.PromptJson));
         Assert.Contains("BodyText/BodyHtml", stage.PromptJson);
-        Assert.Contains("PORT OF DESTINATION", stage.PromptJson);
-        Assert.Contains("20-DV/20DV", stage.PromptJson);
-        Assert.Contains("TOTAL ALL IN", stage.PromptJson);
+        Assert.Contains("PORT OF DESTINATION", DecodePrompt(stage.PromptJson));
+        Assert.Contains("20-DV/20DV", DecodePrompt(stage.PromptJson));
+        Assert.Contains("TOTAL ALL IN", DecodePrompt(stage.PromptJson));
         Assert.IsFalse(
             stage.PromptJson.Contains(
                 "Crea una fila por combinación aplicable",
@@ -159,8 +171,8 @@ public sealed class PricingEmailFallbackTests
         ).Single();
 
         StringAssert.Contains(stage.PromptJson, "USD6300/6400 valid 8-14/Aug");
-        StringAssert.Contains(stage.PromptJson, "Nanjing(+arb USD400)");
-        StringAssert.Contains(stage.PromptJson, "diaper /bicycle");
+        StringAssert.Contains(DecodePrompt(stage.PromptJson), "Nanjing(+arb USD400)");
+        StringAssert.Contains(DecodePrompt(stage.PromptJson), "diaper /bicycle");
         Assert.IsFalse(stage.PromptJson.Contains("USD5815", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(stage.PromptJson.Contains("AVISO LEGAL", StringComparison.OrdinalIgnoreCase));
     }
@@ -183,7 +195,7 @@ public sealed class PricingEmailFallbackTests
         );
         var options = payload["options"]!.AsObject();
 
-        Assert.AreEqual(3_072, options["num_predict"]!.GetValue<int>());
+        Assert.AreEqual(1_536, options["num_predict"]!.GetValue<int>());
         Assert.AreEqual(8_192, options["num_ctx"]!.GetValue<int>());
         Assert.AreEqual("json", payload["format"]!.GetValue<string>());
     }
@@ -546,7 +558,7 @@ public sealed class PricingEmailFallbackTests
         StringAssert.Contains(stage.PromptJson, "$7,700");
         Assert.IsFalse(stage.PromptJson.Contains("$6,700", StringComparison.Ordinal));
         Assert.IsFalse(stage.PromptJson.Contains("AVISO LEGAL", StringComparison.OrdinalIgnoreCase));
-        StringAssert.Contains(stage.PromptJson, "primera sección visible");
+        StringAssert.Contains(DecodePrompt(stage.PromptJson), "primera sección visible");
     }
 
     [TestMethod]

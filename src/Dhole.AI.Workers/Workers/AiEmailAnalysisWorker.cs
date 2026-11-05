@@ -62,11 +62,17 @@ internal sealed class AiEmailAnalysisWorker(
         await RecoverExpiredLeasesAsync(cancellationToken);
     }
 
-    internal async Task ProcessAvailableJobsAsync(CancellationToken cancellationToken)
+    internal async Task ProcessAvailableJobsAsync(
+        CancellationToken cancellationToken,
+        int? batchBudget = null
+    )
     {
-        var maxJobs = Math.Min(
-            ReadPositiveInt(configuration["AI:EmailJobs:MaxJobsPerRun"], 1),
-            ReadPositiveInt(configuration["AI:EmailJobs:MaxConcurrentJobs"], 1)
+        // The dispatcher owns the global batch budget. Each isolated slot must
+        // process its assigned share, not the concurrency cap.
+        var maxJobs = Math.Clamp(
+            batchBudget ?? ReadPositiveInt(configuration["AI:EmailJobs:MaxJobsPerRun"], 32),
+            1,
+            256
         );
         for (var index = 0; index < maxJobs; index++)
         {

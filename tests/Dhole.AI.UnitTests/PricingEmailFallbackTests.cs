@@ -196,7 +196,7 @@ public sealed class PricingEmailFallbackTests
         var options = payload["options"]!.AsObject();
 
         Assert.AreEqual(1_536, options["num_predict"]!.GetValue<int>());
-        Assert.AreEqual(8_192, options["num_ctx"]!.GetValue<int>());
+        Assert.AreEqual(7_168, options["num_ctx"]!.GetValue<int>());
         Assert.AreEqual("json", payload["format"]!.GetValue<string>());
     }
 

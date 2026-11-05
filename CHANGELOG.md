@@ -9,6 +9,11 @@
 - AI email dispatcher distributes 32 jobs per cycle across isolated workers.
 - Model execution timeouts are bounded to avoid indefinite waiting; stale executions are recovered sooner.
 
+### Monitoring and recovery
+- Jobs pendientes por antigüedad (>30 minutos) activan estado degradado de salud, además del umbral de cantidad.
+- Métricas: pendientes antiguos, antigüedad del más viejo y trabajos completados en la última hora.
+- Pruebas de distribución exacta de trabajos por batch y límite de concurrencia.
+
 ### Safeguards
 - Individual email-job state, PostgreSQL claim leases and Redis outbox/inbox idempotency are retained.
 - No automated production deployment is authorized by this change.

@@ -36,6 +36,36 @@ internal sealed class AiEmailJobsHealthCheck(
                     && job.LeaseExpiresAtUtc.Value < now,
                 cancellationToken
             );
+        // A small queue can be stuck for hours without reaching the count-only
+        // backlog threshold. Track job age so monitoring detects that failure.
+        var backlogAgeMinutes = ReadPositiveInt(
+            configuration["Monitoring:AsyncEmail:MaximumQueuedAgeMinutes"],
+            30
+        );
+        var oldestQueuedAtUtc = await dbContext.AiEmailAnalysisJobs
+            .AsNoTracking()
+            .Where(job =>
+                job.Status == AiEmailAnalysisJobStatus.Pending
+                || job.Status == AiEmailAnalysisJobStatus.RetryScheduled)
+            .OrderBy(job => job.CreatedAtUtc)
+            .Select(job => (DateTime?)job.CreatedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+        var agedQueuedJobs = await dbContext.AiEmailAnalysisJobs
+            .AsNoTracking()
+            .CountAsync(job =>
+                (job.Status == AiEmailAnalysisJobStatus.Pending
+                    || job.Status == AiEmailAnalysisJobStatus.RetryScheduled)
+                && job.CreatedAtUtc < now.AddMinutes(-backlogAgeMinutes),
+                cancellationToken
+            );
+        var completedLastHour = await dbContext.AiEmailAnalysisJobs
+            .AsNoTracking()
+            .CountAsync(job =>
+                job.Status == AiEmailAnalysisJobStatus.Completed
+                && job.CompletedAtUtc.HasValue
+                && job.CompletedAtUtc.Value >= now.AddHours(-1),
+                cancellationToken
+            );
         var outboxPending = await dbContext.OutboxMessages.CountAsync(
             message => message.Status == OutboxMessageStatus.Pending,
             cancellationToken
@@ -95,6 +125,11 @@ internal sealed class AiEmailJobsHealthCheck(
                 AiEmailAnalysisJobStatus.Failed
             ),
             ["ai_email_jobs_without_heartbeat"] = staleJobs,
+            ["ai_email_jobs_aged_pending"] = agedQueuedJobs,
+            ["ai_email_oldest_pending_age_minutes"] = oldestQueuedAtUtc.HasValue
+                ? Math.Max(0, (int)(now - oldestQueuedAtUtc.Value).TotalMinutes)
+                : 0,
+            ["ai_email_jobs_completed_last_hour"] = completedLastHour,
             ["outbox_pending"] = outboxPending,
             ["outbox_failed"] = outboxFailed,
             ["inbox_pending"] = inboxPending,
@@ -104,6 +139,7 @@ internal sealed class AiEmailJobsHealthCheck(
 
         return !profileActive
             || staleJobs > 0
+            || agedQueuedJobs > 0
             || outboxFailed > 0
             || inboxFailed > 0
             || backlog > warningThreshold

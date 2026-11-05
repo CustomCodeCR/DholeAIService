@@ -543,7 +543,7 @@ internal static class PricingEmailAiExecutionFactory
         var isAirTariff = IsAirTariffSource(semanticSource);
         var airRoute = InferAirRoute(semanticSource);
         var isMaritimeTariff = !isAirTariff && IsMaritimeTariffSource(source);
-        var isMscPanamaTariff = IsMscPanamaTariffSource(source);
+        var isMscPanamaTariff = IsMscPanamaTariffSource(semanticSource);
         var isLclTariff = !isAirTariff && IsLclTariffSource(source);
         var isNarrativeNac = IsNarrativeNacSource(source);
         var inferredContainerType = isAirTariff
@@ -1772,7 +1772,7 @@ internal static class PricingEmailAiExecutionFactory
         var explicitRoute = Regex.Match(
             source,
             @"\b(?<from>[A-Z]{3})\b\s*\)?\s*(?:hacia|to|[-–])\s*\(?(?<to>[A-Z]{3})\b",
-            RegexOptions.IgnoreCase
+            RegexOptions.None
         );
         if (explicitRoute.Success)
         {

@@ -41,6 +41,13 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
             MaximumConfiguredParallelism
         );
 
+        var quotas = EmailBatchBudget.Distribute(
+            ReadPositiveInt(configuration["AI:EmailJobs:MaxJobsPerRun"], 32),
+            parallelism
+        );
+        var batchSize = quotas.Sum();
+        var activeSlots = quotas.Length;
+
         // The scheduler can tick again while a long-running model request is active.
         // Keep the in-process job budget bounded even if periodic executions overlap.
         if (!await DispatchGate.WaitAsync(0, cancellationToken))
@@ -60,9 +67,19 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
                 await maintenanceWorker.PrepareAsync(cancellationToken);
             }
 
-            logger.LogInformation("Dispatching AI email jobs with {Parallelism} parallel slots.", parallelism);
-            var tasks = Enumerable.Range(0, parallelism)
-                .Select(slot => RunSlotAsync(slot, context, cancellationToken))
+            logger.LogInformation(
+                "Dispatching up to {BatchSize} AI email jobs in {Parallelism} parallel slots.",
+                batchSize,
+                activeSlots
+            );
+            // Keep the cycle-wide budget exact, including when batchSize is not
+            // divisible by the number of processing slots.
+            var tasks = Enumerable.Range(0, activeSlots)
+                .Select(slot => RunSlotAsync(
+                    slot,
+                    quotas[slot],
+                    cancellationToken
+                ))
                 .ToArray();
 
             await Task.WhenAll(tasks);
@@ -75,7 +92,7 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
 
     private async Task RunSlotAsync(
         int slot,
-        IWorkerExecutionContext context,
+        int jobsPerSlot,
         CancellationToken cancellationToken
     )
     {
@@ -93,7 +110,7 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
 
             await using var scope = scopeFactory.CreateAsyncScope();
             var worker = scope.ServiceProvider.GetRequiredService<AiEmailAnalysisWorker>();
-            await worker.ProcessAvailableJobsAsync(cancellationToken);
+            await worker.ProcessAvailableJobsAsync(cancellationToken, jobsPerSlot);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

@@ -41,12 +41,12 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
             MaximumConfiguredParallelism
         );
 
-        var batchSize = Math.Clamp(
+        var quotas = EmailBatchBudget.Distribute(
             ReadPositiveInt(configuration["AI:EmailJobs:MaxJobsPerRun"], 32),
-            1,
-            256
+            parallelism
         );
-        var activeSlots = Math.Min(parallelism, batchSize);
+        var batchSize = quotas.Sum();
+        var activeSlots = quotas.Length;
 
         // The scheduler can tick again while a long-running model request is active.
         // Keep the in-process job budget bounded even if periodic executions overlap.
@@ -77,7 +77,7 @@ internal sealed class AiEmailAnalysisDispatcherWorker(
             var tasks = Enumerable.Range(0, activeSlots)
                 .Select(slot => RunSlotAsync(
                     slot,
-                    batchSize / activeSlots + (slot < batchSize % activeSlots ? 1 : 0),
+                    quotas[slot],
                     cancellationToken
                 ))
                 .ToArray();

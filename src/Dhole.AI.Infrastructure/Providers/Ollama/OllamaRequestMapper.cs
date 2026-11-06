@@ -56,9 +56,10 @@ internal static class OllamaRequestMapper
             },
         };
 
-        // Structured email formatting is a batch operation. Unloading the model after
-        // the request prevents fallback models from remaining resident in RAM together.
-        if (request.RequiresStructuredOutput)
+        // Do not evict Qwen after each email. Repeated cold loads consume most of
+        // the throughput of a small, continuous email queue. Legacy or infrequently
+        // selected structured models retain the old eviction behavior to avoid OOM.
+        if (request.RequiresStructuredOutput && !IsQwen35(model))
         {
             payload["keep_alive"] = 0;
         }
@@ -71,9 +72,10 @@ internal static class OllamaRequestMapper
         {
             payload["think"] = false;
 
-            // The full JSON-schema grammar is expensive for legacy Llama 3 models and
-            // can make Ollama exhaust memory or spend the complete timeout compiling /
-            // decoding the grammar. JSON mode is still validated by Dhole afterwards.
+            // Qwen 3.5 also pays a large per-request cost constructing the full
+            // pricing email JSON-schema grammar (250 x 22 fields). Use fast JSON
+            // mode and keep Dhole's strict downstream normalization/validation.
+            // This avoids schema compilation timeouts and truncated responses.
             payload["format"] = RequiresLightweightJsonMode(model)
                 ? JsonValue.Create("json")
                 : ProviderJson.ParseNode(request.JsonSchema) ?? JsonValue.Create("json");
@@ -153,7 +155,7 @@ internal static class OllamaRequestMapper
 
     private static bool RequiresLightweightJsonMode(string model)
     {
-        return IsLegacyLlama(model);
+        return IsLegacyLlama(model) || IsQwen35(model);
     }
 
     private static bool IsQwen35(string model)

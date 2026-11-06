@@ -1,21 +1,28 @@
 # Changelog
 
+## [1.3.3] - 2026-11-06
+
+- Recupera solicitudes AI en cola con resultados anteriores del mismo correo, adjunto y hash; republica el evento de finalización de forma transaccional sin reenviar al modelo.
+- Limita la simultaneidad de Ollama a 2 y el batch a 16 para reducir saturación; espacía reintentos y mantiene recuperación de leases.
+- Ecosistema Dhole 1.3.4, release DH-20261106-EMAIL-QUEUE-001.
+
+
 ## [1.3.2] - 2026-11-05
 
-- Elimina limpieza destructiva de ramas remotas desde despliegues AI.
-- Reintenta clonación de infraestructura ante errores transitorios de DNS en master y develop.
-
+- Evita borrar ramas remotas desde el despliegue AI; las ramas de trabajo y release permanecen intactas.
+- Añade reintentos de clonación frente a errores transitorios de DNS en staging y producción.
 
 ## [1.3.1] - 2026-11-05
 
-- Elimina el skipped por gate manual del deploy de Dhole AI en master.
-- Conserva respaldo, preflight y desplegar por push con SemVer del ecosistema 1.3.1.
+- Habilita despliegue automático del servicio de IA en cada push a master; elimina el job skipped por autorización manual.
+- Conserva staging en develop y verifica versión SemVer del release.
 
 ## [1.3.0] - 2026-11-05
 
-- Worker AI procesa lotes acotados con reparto seguro entre slots.
-- Detección de colas detenidas y límites por solicitud del proveedor.
-- Métricas de terminación y pruebas de concurrencia.
+- Procesamiento de hasta 32 análisis de correo por lote, cuatro slots aislados.
+- Detección de trabajos antiguos por edad y métricas de rendimiento horario.
+- Timeout acotado de Ollama y recuperación de ejecuciones huérfanas.
+- Pruebas de presupuesto y reparto de lotes.
 
 ## [1.2.0] - 2026-11-05
 

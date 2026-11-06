@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.5] - 2026-11-06
+
+- Reduce la salida de Qwen: filas tarifarias JSON omiten columnas sin dato en lugar de repetir 22 campos null por tarifa.
+- Envía las 22 claves válidas y el contrato de salida directamente en el prompt, imprescindible al usar Ollama format=json sin gramática completa.
+- Mantiene normalización y validaciones de importes, equipos y rutas; no trunca filas ni cambia el número máximo de fragmentos.
+- Release del ecosistema Dhole 1.3.8 DH-20261106-AI-THROUGHPUT-010.
+
+
 ## [1.3.4] - 2026-11-06
 
 - Mantiene Qwen 3.5 residente 15 minutos en trabajos estructurados para evitar recargas por cada correo.

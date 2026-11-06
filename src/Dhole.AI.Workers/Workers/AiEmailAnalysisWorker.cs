@@ -714,10 +714,25 @@ internal sealed class AiEmailAnalysisWorker(
                     DateTime.UtcNow
                 );
 
-            await dbContext.ExecuteInRetryableTransactionAsync(
+            // The October cleanup can cancel a processing lease while Ollama
+            // is still returning. Reload under a row lock before publishing any
+            // completion event so a cancelled source cannot be resurrected.
+            var completedJobId = job.Id;
+            dbContext.ChangeTracker.Clear();
+            var committed = await dbContext.ExecuteInRetryableTransactionAsync<bool>(
                 async () =>
                 {
-                    job.MarkCompleted(
+                    var current = await dbContext.AiEmailAnalysisJobs
+                        .FromSqlInterpolated($"""
+                            SELECT * FROM ai."AiEmailAnalysisJobs"
+                            WHERE id = {completedJobId}
+                            FOR UPDATE
+                            """)
+                        .SingleOrDefaultAsync(cancellationToken);
+                    if (current?.Status != AiEmailAnalysisJobStatus.Processing)
+                        return false;
+
+                    current.MarkCompleted(
                         primaryResult.ExecutionId,
                         JsonSerializer.Serialize(parsed, JsonOptions)
                     );
@@ -744,7 +759,7 @@ internal sealed class AiEmailAnalysisWorker(
                             Payload: new
                             {
                                 Stage = "email-analysis-completed",
-                                Job = CreateJobAuditSnapshot(job),
+                                Job = CreateJobAuditSnapshot(current),
                                 AiServiceInputs = stageInputs,
                                 AiServiceOutputs = successfulOutputs,
                                 ParsedOutput = parsed,
@@ -761,10 +776,19 @@ internal sealed class AiEmailAnalysisWorker(
                         cancellationToken
                     );
                     await dbContext.SaveChangesAsync(cancellationToken);
+                    return true;
                 },
                 IsolationLevel.ReadCommitted,
                 cancellationToken
             );
+
+            if (!committed)
+            {
+                logger.LogInformation(
+                    "Se descartó una respuesta tardía de Ollama para el trabajo AI {AiJobId}: " +
+                    "la solicitud ya fue cancelada o finalizada.", completedJobId);
+                return;
+            }
 
             logger.LogInformation(
                 "Análisis AI de correo completado. AI job {AiJobId}; "
@@ -774,7 +798,7 @@ internal sealed class AiEmailAnalysisWorker(
                     + "RequestHash {RequestHash}.",
                 job.Id,
                 job.ExternalRequestId,
-                job.AiExecutionId,
+                primaryResult.ExecutionId,
                 job.EmailExtractionJobId,
                 job.AttemptCount,
                 parsed.Rows.Count,

@@ -34,6 +34,8 @@ internal sealed class AiEmailAnalysisWorker(
         PropertyNameCaseInsensitive = true,
     };
 
+    private static DateTime _lastSourceReconciledAtUtc = DateTime.MinValue;
+
     private readonly string _leaseOwner =
         $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
 
@@ -57,6 +59,7 @@ internal sealed class AiEmailAnalysisWorker(
     {
         dbContext.ChangeTracker.Clear();
         await CancelPreviousMonthQueueAsync(cancellationToken);
+        await ReconcileClosedSourceJobsAsync(cancellationToken);
         await CompleteQueuedJobsWithExistingResultsAsync(cancellationToken);
         await ApplyConfiguredAttemptLimitAsync(cancellationToken);
         await RecoverStaleExecutionsAsync(cancellationToken);
@@ -132,6 +135,109 @@ internal sealed class AiEmailAnalysisWorker(
             logger.LogInformation(
                 "Se cerraron {Count} solicitudes AI antiguas sin llamar a Ollama.",
                 closed);
+    }
+
+
+    /// <summary>
+    /// The AI queue is durable and lives in a separate PostgreSQL database.
+    /// An October email may have a November AI job creation date, or the email
+    /// may have been deleted after the AI request was queued. Reconcile against
+    /// DataExtraction's authoritative source state before claiming Ollama slots.
+    /// Never erase completed results, process active leases, or delete audit data.
+    /// </summary>
+    private async Task ReconcileClosedSourceJobsAsync(CancellationToken cancellationToken)
+    {
+        if (DateTime.UtcNow - _lastSourceReconciledAtUtc < TimeSpan.FromSeconds(30))
+            return;
+
+        var pending = await dbContext.AiEmailAnalysisJobs
+            .AsNoTracking()
+            .Where(job => job.Status == AiEmailAnalysisJobStatus.Pending
+                || job.Status == AiEmailAnalysisJobStatus.RetryScheduled)
+            .OrderBy(job => job.CreatedAtUtc)
+            .Take(1000)
+            .Select(job => new { job.Id, job.ExternalRequestId })
+            .ToListAsync(cancellationToken);
+
+        if (pending.Count == 0)
+        {
+            _lastSourceReconciledAtUtc = DateTime.UtcNow;
+            return;
+        }
+
+        var cancelledCount = 0;
+        foreach (var batch in pending.Chunk(250))
+        {
+            IReadOnlyList<AiEmailReconciliationStatus> statuses;
+            try
+            {
+                statuses = await dataExtractionClient.ReconcileAsync(
+                    batch.Select(job => job.ExternalRequestId).Distinct().ToArray(),
+                    cancellationToken
+                );
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Older DataExtraction versions may not expose /reconcile yet.
+                // Continue ordinary dispatch rather than freezing current-month emails.
+                logger.LogWarning(exception,
+                    "No se pudo conciliar el lote de AI con DataExtraction. " +
+                    "Se conserva la cola para el siguiente ciclo.");
+                return;
+            }
+
+            var closed = statuses.Where(item => item.ShouldCancel)
+                .ToDictionary(item => item.RequestId, item => item.Reason);
+            var jobIds = batch.Where(job => closed.ContainsKey(job.ExternalRequestId))
+                .Select(job => job.Id).ToArray();
+            if (jobIds.Length == 0)
+                continue;
+
+            await dbContext.ExecuteInRetryableTransactionAsync(
+                async () =>
+                {
+                    var locked = await dbContext.AiEmailAnalysisJobs
+                        .FromSqlInterpolated($"""
+                            SELECT *
+                            FROM ai."AiEmailAnalysisJobs"
+                            WHERE id = ANY({jobIds})
+                              AND status IN ('Pending', 'RetryScheduled')
+                            ORDER BY created_at_utc
+                            FOR UPDATE SKIP LOCKED
+                            """)
+                        .ToListAsync(cancellationToken);
+
+                    foreach (var job in locked)
+                    {
+                        if (!closed.TryGetValue(job.ExternalRequestId, out var reason))
+                            continue;
+
+                        if (reason == "HistoricalMonth")
+                            job.CancelHistoricalMonth();
+                        else
+                            job.CancelUnavailableSource(
+                                "AI.SourceUnavailable",
+                                $"La fuente original ya no está activa ({reason})."
+                            );
+                        cancelledCount++;
+                    }
+
+                    if (locked.Count > 0)
+                        await dbContext.SaveChangesAsync(cancellationToken);
+                },
+                IsolationLevel.ReadCommitted,
+                cancellationToken
+            );
+            dbContext.ChangeTracker.Clear();
+        }
+
+        _lastSourceReconciledAtUtc = DateTime.UtcNow;
+        if (cancelledCount > 0)
+            logger.LogInformation(
+                "Se cancelaron {CancelledCount} trabajos AI obsoletos en lotes " +
+                "sin utilizar Ollama y sin borrar historial.",
+                cancelledCount
+            );
     }
 
     /// <summary>
@@ -817,12 +923,15 @@ internal sealed class AiEmailAnalysisWorker(
 
         // DataExtraction rejected an obsolete email before handing over its
         // content; do not retry or record this expected closure as an AI failure.
-        if (errorCode == "AI.HistoricalMonthClosed")
+        if (errorCode is "AI.HistoricalMonthClosed" or "AI.SourceUnavailable")
         {
-            job.CancelHistoricalMonth();
+            if (errorCode == "AI.HistoricalMonthClosed")
+                job.CancelHistoricalMonth();
+            else
+                job.CancelUnavailableSource(errorCode, errorMessage);
             await dbContext.SaveChangesAsync(cancellationToken);
             logger.LogInformation(
-                "AI job {AiJobId} cerrado por antigüedad sin ejecutar Ollama.",
+                "AI job {AiJobId} cerrado porque su fuente no está disponible.",
                 job.Id);
             return;
         }

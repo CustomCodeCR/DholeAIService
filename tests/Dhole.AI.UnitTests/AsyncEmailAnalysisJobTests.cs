@@ -88,6 +88,44 @@ public sealed class AsyncEmailAnalysisJobTests
     }
 
     [TestMethod]
+    public void DeletedSource_CancelsQueuedJobAndKeepsAuditMetadata()
+    {
+        var job = CreateJob(maxAttemptCount: 2);
+
+        job.CancelUnavailableSource("AI.SourceUnavailable", "Original eliminado.");
+
+        Assert.AreEqual(AiEmailAnalysisJobStatus.Cancelled, job.Status);
+        Assert.AreEqual("AI.SourceUnavailable", job.ErrorCode);
+        Assert.AreEqual("Original eliminado.", job.ErrorMessage);
+        Assert.AreEqual(0, job.AttemptCount);
+        Assert.IsNotNull(job.CompletedAtUtc);
+        Assert.IsNull(job.NextAttemptAtUtc);
+        var version = job.Version;
+
+        job.CancelUnavailableSource("AI.SourceUnavailable", "Duplicado.");
+
+        Assert.AreEqual(version, job.Version);
+        Assert.AreEqual("Original eliminado.", job.ErrorMessage);
+    }
+
+    [TestMethod]
+    public void HistoricalSource_CancelsInFlightButNeverOverwritesCompletedWork()
+    {
+        var inFlight = CreateJob(maxAttemptCount: 2);
+        inFlight.MarkProcessing("worker-a", DateTime.UtcNow.AddMinutes(10));
+        inFlight.CancelHistoricalMonth();
+        Assert.AreEqual(AiEmailAnalysisJobStatus.Cancelled, inFlight.Status);
+        Assert.IsNull(inFlight.LeaseOwner);
+        Assert.AreEqual("AI.HistoricalMonthClosed", inFlight.ErrorCode);
+
+        var completed = CreateJob(maxAttemptCount: 2);
+        completed.MarkProcessing("worker-a", DateTime.UtcNow.AddMinutes(10));
+        completed.MarkCompleted(Guid.NewGuid(), """{"confidence":99}""");
+        completed.CancelHistoricalMonth();
+        Assert.AreEqual(AiEmailAnalysisJobStatus.Completed, completed.Status);
+    }
+
+    [TestMethod]
     public void Worker_UsesApplicationOrchestratorAndHasNoSelfGrpcDependency()
     {
         var workerType = typeof(Dhole.AI.Workers.Worker)

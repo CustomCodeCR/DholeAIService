@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.7] - 2026-11-06
+
+- Conciliación en lotes de hasta 250 solicitudes AI con el estado real del correo en DataExtraction; cancela trabajos eliminados, archivados o ya cerrados antes de consumir Ollama.
+- Conserva ejecuciones exitosas, auditoría, recuperación de leases y reintentos válidos; no clasifica los cierres esperados como fallos del modelo.
+- Pruebas unitarias para cancelación idempotente y protección de resultados completados.
+- La acción manual Retirar ahora deja el trabajo como Cancelled en vez de inflar el contador de Failed.
+- Ecosistema Dhole 1.3.10, release DH-20261106-AI-SOURCE-RECONCILE-012.
+
+
 ## [1.3.6] - 2026-11-06
 
 - Cierra solicitudes AI antiguas en estado Pending/RetryScheduled sin invocar Ollama ni borrar filas históricas.

@@ -221,7 +221,7 @@ public static class AiOperationsEndpoints
             });
         }
 
-        job.MarkFailed("AI.ManuallyCancelled", "El trabajo fue retirado manualmente de la cola de AI.");
+        job.CancelUnavailableSource("AI.ManuallyCancelled", "El trabajo fue retirado manualmente de la cola de AI.");
         await dbContext.SaveChangesAsync(cancellationToken);
         return Results.Ok(new { jobId, status = job.Status.ToString() });
     }

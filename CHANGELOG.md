@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.8] - 2026-11-06
+
+- Distingue ejecución de modelo completada con revisión posterior de un fallo real de inferencia en el estado operativo.
+- Expone DisplayStatus=CompletedWithReview en trabajos afectados, manteniendo intactos Status/ErrorCode para recuperación y auditoría.
+- Separa los contadores globales de Requiere revisión y Fallidos, con pruebas unitarias de clasificación.
+- Ecosistema Dhole 1.3.11, release DH-20261106-AI-COMPLETED-REVIEW-013.
+
 ## [1.3.7] - 2026-11-06
 
 - Conciliación en lotes de hasta 250 solicitudes AI con el estado real del correo en DataExtraction; cancela trabajos eliminados, archivados o ya cerrados antes de consumir Ollama.

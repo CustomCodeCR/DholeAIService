@@ -1,5 +1,7 @@
 using Dhole.AI.Application.Abstractions.Services;
+using Dhole.AI.Domain.EmailAnalysis;
 using Dhole.AI.Domain.EmailAnalysis.Entities;
+using Dhole.AI.Domain.Executions.Enums;
 using Dhole.AI.Domain.EmailAnalysis.Enums;
 
 namespace Dhole.AI.UnitTests;
@@ -123,6 +125,38 @@ public sealed class AsyncEmailAnalysisJobTests
         completed.MarkCompleted(Guid.NewGuid(), """{"confidence":99}""");
         completed.CancelHistoricalMonth();
         Assert.AreEqual(AiEmailAnalysisJobStatus.Completed, completed.Status);
+    }
+
+    [TestMethod]
+    public void CompletedInferenceWithFailedHandoff_IsDisplayedAsReviewNotModelFailure()
+    {
+        Assert.AreEqual(
+            AiEmailAnalysisPresentation.CompletedWithReview,
+            AiEmailAnalysisPresentation.Resolve(
+                AiEmailAnalysisJobStatus.Failed,
+                AiExecutionStatus.Completed));
+
+        Assert.AreEqual(
+            AiEmailAnalysisJobStatus.Failed.ToString(),
+            AiEmailAnalysisPresentation.Resolve(
+                AiEmailAnalysisJobStatus.Failed,
+                AiExecutionStatus.Failed));
+
+        Assert.AreEqual(
+            AiEmailAnalysisJobStatus.Completed.ToString(),
+            AiEmailAnalysisPresentation.Resolve(
+                AiEmailAnalysisJobStatus.Completed,
+                AiExecutionStatus.Completed));
+    }
+
+    [TestMethod]
+    public void HistoricalFailureWithNoExecution_RemainsAnActualFailure()
+    {
+        Assert.AreEqual(
+            AiEmailAnalysisJobStatus.Failed.ToString(),
+            AiEmailAnalysisPresentation.Resolve(
+                AiEmailAnalysisJobStatus.Failed,
+                null));
     }
 
     [TestMethod]

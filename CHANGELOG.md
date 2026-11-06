@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.1] - 2026-11-05
+
+- Elimina el skipped por gate manual del deploy de Dhole AI en master.
+- Conserva respaldo, preflight y desplegar por push con SemVer del ecosistema 1.3.1.
+
 ## [1.3.0] - 2026-11-05
 
 - Worker AI procesa lotes acotados con reparto seguro entre slots.

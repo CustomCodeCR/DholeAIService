@@ -298,7 +298,7 @@ internal static class PricingEmailAiExecutionFactory
                     "Suma en surcharges solo cargos por contenedor: ISPS 15/cntr + P/S 50/cntr = 65. Conserva cargos por BL únicamente en remarks.",
                     "Los recargos condicionales por peso/equipo se conservan en remarks y no se suman automáticamente; por ejemplo ONE overweight surcharge 18-21 tons USD 200/20'.",
                     "Si aparece General Cargo después de las tablas, úsalo como commodity de esas tarifas salvo mercancía explícita distinta. Conserva Subject to DTHC/local charges en remarks.",
-                    "Para cualquier importe desconocido usa null. Nunca uses números gigantes, infinitos, exponentes extremos ni valores centinela; surcharges debe ser un único número decimal razonable.",
+                    "Cuando no haya evidencia de un importe, omite el campo (equivale a null interno). Nunca uses números gigantes, infinitos, exponentes extremos ni valores centinela; surcharges debe ser un único número decimal razonable.",
                     "Conserva en spaceComment excepciones de espacio como except TIANJIN/XIAMEN y aplícalas solo a la oferta correspondiente.",
                     "Conserva en spaceComment notas generales de disponibilidad como space is tight, rollovers o confirmación de espacio caso por caso.",
                     "Una proyección futura de aumento se conserva en remarks como nota comercial y nunca se suma a oceanFreight, surcharges ni totales actuales.",

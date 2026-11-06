@@ -81,7 +81,7 @@ public sealed class PricingEmailFallbackTests
             imageBytes: null
         ).Single();
 
-        Assert.Contains("pricing-email-v17-reviewed-mode-learning", stage.PromptJson);
+        Assert.Contains("pricing-email-v18-compact-output", stage.PromptJson);
         Assert.Contains("filas compactas", DecodePrompt(stage.PromptJson), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("processingDateUtc", stage.PromptJson);
         Assert.Contains("ISPS 15/cntr + P/S 50/cntr = 65", DecodePrompt(stage.PromptJson));

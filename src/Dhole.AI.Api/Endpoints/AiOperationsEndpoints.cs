@@ -3,6 +3,7 @@ using System.Text.Json;
 using CustomCodeFramework.Mongo.Abstractions;
 using Dhole.AI.Api.Authorization;
 using Dhole.AI.Domain.Connections.Enums;
+using Dhole.AI.Domain.EmailAnalysis;
 using Dhole.AI.Domain.EmailAnalysis.Enums;
 using Dhole.AI.Domain.Executions.Enums;
 using Dhole.AI.Domain.Shared;
@@ -58,6 +59,19 @@ public static class AiOperationsEndpoints
             .ToListAsync(cancellationToken);
         var countLookup = counts.ToDictionary(item => item.Status, item => item.Count);
 
+        // A successful Ollama execution is not a model failure. The durable
+        // job can still be Failed if a later parse/validation/handoff failed.
+        // Count those separately for an accurate dashboard, without mutating
+        // the source record or hiding actionable review errors.
+        var reviewRequiredCount = await dbContext.AiEmailAnalysisJobs
+            .AsNoTracking()
+            .Where(job => job.Status == AiEmailAnalysisJobStatus.Failed
+                && job.AiExecutionId.HasValue)
+            .CountAsync(job => dbContext.AiExecutions.Any(execution =>
+                execution.Id == job.AiExecutionId
+                && execution.Status == AiExecutionStatus.Completed),
+                cancellationToken);
+
         var jobs = await dbContext.AiEmailAnalysisJobs
             .AsNoTracking()
             .Where(job =>
@@ -68,6 +82,21 @@ public static class AiOperationsEndpoints
             .OrderByDescending(job => job.StartedAtUtc ?? job.NextAttemptAtUtc)
             .Take(limit)
             .ToListAsync(cancellationToken);
+
+        var referencedExecutionIds = jobs
+            .Where(job => job.Status == AiEmailAnalysisJobStatus.Failed
+                && job.AiExecutionId.HasValue)
+            .Select(job => job.AiExecutionId!.Value)
+            .Distinct()
+            .ToArray();
+        var completedExecutionIds = referencedExecutionIds.Length == 0
+            ? new HashSet<Guid>()
+            : (await dbContext.AiExecutions
+                .AsNoTracking()
+                .Where(execution => referencedExecutionIds.Contains(execution.Id)
+                    && execution.Status == AiExecutionStatus.Completed)
+                .Select(execution => execution.Id)
+                .ToArrayAsync(cancellationToken)).ToHashSet();
 
         var correlations = jobs.Select(job => job.CorrelationId)
             .Where(value => !string.IsNullOrWhiteSpace(value))
@@ -164,6 +193,12 @@ public static class AiOperationsEndpoints
                 job.CorrelationId,
                 job.RequestHash,
                 Status = job.Status.ToString(),
+                DisplayStatus = AiEmailAnalysisPresentation.Resolve(
+                    job.Status,
+                    job.AiExecutionId.HasValue
+                        && completedExecutionIds.Contains(job.AiExecutionId.Value)
+                        ? AiExecutionStatus.Completed
+                        : null),
                 job.AttemptCount,
                 job.MaxAttemptCount,
                 job.NextAttemptAtUtc,
@@ -187,7 +222,10 @@ public static class AiOperationsEndpoints
                 Pending = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.Pending),
                 Processing = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.Processing),
                 RetryScheduled = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.RetryScheduled),
-                Failed = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.Failed),
+                Failed = Math.Max(0,
+                    countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.Failed)
+                        - reviewRequiredCount),
+                ReviewRequired = reviewRequiredCount,
                 Completed = countLookup.GetValueOrDefault(AiEmailAnalysisJobStatus.Completed),
                 Items = queueItems,
             },

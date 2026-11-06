@@ -58,7 +58,6 @@ internal sealed class AiEmailAnalysisWorker(
     internal async Task PrepareAsync(CancellationToken cancellationToken)
     {
         dbContext.ChangeTracker.Clear();
-        await CancelPreviousMonthQueueAsync(cancellationToken);
         await ReconcileClosedSourceJobsAsync(cancellationToken);
         await CompleteQueuedJobsWithExistingResultsAsync(cancellationToken);
         await ApplyConfiguredAttemptLimitAsync(cancellationToken);
@@ -93,80 +92,35 @@ internal sealed class AiEmailAnalysisWorker(
     }
 
     /// <summary>
-    /// Stops jobs enqueued before the current Costa Rican month. More recent
-    /// AI jobs from old emails are rejected by DataExtraction's HTTP 410 gate.
-    /// This step never calls Ollama or deletes durable job history.
-    /// </summary>
-    private async Task CancelPreviousMonthQueueAsync(CancellationToken cancellationToken)
-    {
-        var costaRica = TimeZoneInfo.FindSystemTimeZoneById("America/Costa_Rica");
-        var nowLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, costaRica);
-        var monthStartUtc = TimeZoneInfo.ConvertTimeToUtc(
-            new DateTime(nowLocal.Year, nowLocal.Month, 1), costaRica);
-
-        var closed = 0;
-        await dbContext.ExecuteInRetryableTransactionAsync(
-            async () =>
-            {
-                var candidates = await dbContext.AiEmailAnalysisJobs
-                    .FromSqlInterpolated($"""
-                        SELECT *
-                        FROM ai."AiEmailAnalysisJobs"
-                        WHERE status IN ('Pending', 'RetryScheduled')
-                          AND created_at_utc < {monthStartUtc}
-                        ORDER BY created_at_utc
-                        FOR UPDATE SKIP LOCKED
-                        LIMIT 200
-                        """)
-                    .ToListAsync(cancellationToken);
-                foreach (var item in candidates)
-                {
-                    item.CancelHistoricalMonth();
-                    closed++;
-                }
-
-                if (closed > 0)
-                    await dbContext.SaveChangesAsync(cancellationToken);
-            },
-            IsolationLevel.ReadCommitted,
-            cancellationToken);
-        dbContext.ChangeTracker.Clear();
-        if (closed > 0)
-            logger.LogInformation(
-                "Se cerraron {Count} solicitudes AI antiguas sin llamar a Ollama.",
-                closed);
-    }
-
-
-    /// <summary>
-    /// The AI queue is durable and lives in a separate PostgreSQL database.
-    /// An October email may have a November AI job creation date, or the email
-    /// may have been deleted after the AI request was queued. Reconcile against
-    /// DataExtraction's authoritative source state before claiming Ollama slots.
-    /// Never erase completed results, process active leases, or delete audit data.
+    /// Reconciles pending, retrying and active processing jobs with the
+    /// authoritative ORIGINAL email received time in DataExtraction.
+    /// October 2026 jobs are cancelled regardless of when AI enqueued them.
+    /// Completed results and historical audit records are never deleted.
     /// </summary>
     private async Task ReconcileClosedSourceJobsAsync(CancellationToken cancellationToken)
     {
         if (DateTime.UtcNow - _lastSourceReconciledAtUtc < TimeSpan.FromSeconds(30))
             return;
 
-        var pending = await dbContext.AiEmailAnalysisJobs
+        var candidates = await dbContext.AiEmailAnalysisJobs
             .AsNoTracking()
             .Where(job => job.Status == AiEmailAnalysisJobStatus.Pending
-                || job.Status == AiEmailAnalysisJobStatus.RetryScheduled)
+                || job.Status == AiEmailAnalysisJobStatus.RetryScheduled
+                || job.Status == AiEmailAnalysisJobStatus.Processing)
             .OrderBy(job => job.CreatedAtUtc)
             .Take(1000)
-            .Select(job => new { job.Id, job.ExternalRequestId })
+            .Select(job => new { job.Id, job.ExternalRequestId, job.Status })
             .ToListAsync(cancellationToken);
 
-        if (pending.Count == 0)
+        if (candidates.Count == 0)
         {
             _lastSourceReconciledAtUtc = DateTime.UtcNow;
             return;
         }
 
-        var cancelledCount = 0;
-        foreach (var batch in pending.Chunk(250))
+        var cancelledOctober = 0;
+        var cancelledOther = 0;
+        foreach (var batch in candidates.Chunk(250))
         {
             IReadOnlyList<AiEmailReconciliationStatus> statuses;
             try
@@ -178,19 +132,22 @@ internal sealed class AiEmailAnalysisWorker(
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
-                // Older DataExtraction versions may not expose /reconcile yet.
-                // Continue ordinary dispatch rather than freezing current-month emails.
                 logger.LogWarning(exception,
-                    "No se pudo conciliar el lote de AI con DataExtraction. " +
-                    "Se conserva la cola para el siguiente ciclo.");
+                    "Conciliación con DataExtraction fallida; no se eliminan registros " +
+                    "sin confirmar la fecha de recepción del correo.");
                 return;
             }
 
-            var closed = statuses.Where(item => item.ShouldCancel)
-                .ToDictionary(item => item.RequestId, item => item.Reason);
-            var jobIds = batch.Where(job => closed.ContainsKey(job.ExternalRequestId))
-                .Select(job => job.Id).ToArray();
-            if (jobIds.Length == 0)
+            var statusByRequest = statuses.ToDictionary(item => item.RequestId);
+            var eligibleIds = batch
+                .Where(job => statusByRequest.TryGetValue(job.ExternalRequestId, out var state)
+                    && (OctoberEmailSourcePolicy.ShouldClose(state.SourceReceivedAtUtc)
+                        || (job.Status != AiEmailAnalysisJobStatus.Processing
+                            && state.ShouldCancel)))
+                .Select(job => job.Id)
+                .ToArray();
+
+            if (eligibleIds.Length == 0)
                 continue;
 
             await dbContext.ExecuteInRetryableTransactionAsync(
@@ -200,8 +157,8 @@ internal sealed class AiEmailAnalysisWorker(
                         .FromSqlInterpolated($"""
                             SELECT *
                             FROM ai."AiEmailAnalysisJobs"
-                            WHERE id = ANY({jobIds})
-                              AND status IN ('Pending', 'RetryScheduled')
+                            WHERE id = ANY({eligibleIds})
+                              AND status IN ('Pending', 'RetryScheduled', 'Processing')
                             ORDER BY created_at_utc
                             FOR UPDATE SKIP LOCKED
                             """)
@@ -209,17 +166,32 @@ internal sealed class AiEmailAnalysisWorker(
 
                     foreach (var job in locked)
                     {
-                        if (!closed.TryGetValue(job.ExternalRequestId, out var reason))
+                        if (!statusByRequest.TryGetValue(job.ExternalRequestId, out var state))
                             continue;
 
-                        if (reason == "HistoricalMonth")
+                        var october = OctoberEmailSourcePolicy.ShouldClose(
+                            state.SourceReceivedAtUtc);
+                        if (!october && (job.Status == AiEmailAnalysisJobStatus.Processing
+                            || !state.ShouldCancel))
+                            continue;
+
+                        if (october)
+                        {
                             job.CancelHistoricalMonth();
+                            cancelledOctober++;
+                        }
+                        else if (state.Reason == "HistoricalMonth")
+                        {
+                            job.CancelHistoricalMonth();
+                            cancelledOther++;
+                        }
                         else
+                        {
                             job.CancelUnavailableSource(
                                 "AI.SourceUnavailable",
-                                $"La fuente original ya no está activa ({reason})."
-                            );
-                        cancelledCount++;
+                                $"La fuente original ya no está activa ({state.Reason}).");
+                            cancelledOther++;
+                        }
                     }
 
                     if (locked.Count > 0)
@@ -232,12 +204,12 @@ internal sealed class AiEmailAnalysisWorker(
         }
 
         _lastSourceReconciledAtUtc = DateTime.UtcNow;
-        if (cancelledCount > 0)
+        if (cancelledOctober > 0 || cancelledOther > 0)
             logger.LogInformation(
-                "Se cancelaron {CancelledCount} trabajos AI obsoletos en lotes " +
-                "sin utilizar Ollama y sin borrar historial.",
-                cancelledCount
-            );
+                "Conciliación de cola AI: {OctoberCancelled} trabajos originales " +
+                "de octubre 2026 cancelados, {OtherCancelled} trabajos " +
+                "de fuentes no disponibles; no se borró historial ni se llamó a Ollama.",
+                cancelledOctober, cancelledOther);
     }
 
     /// <summary>
@@ -441,17 +413,20 @@ internal sealed class AiEmailAnalysisWorker(
 
         using var heartbeatCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var executionCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var heartbeatTask = RenewLeaseLoopAsync(
             job.Id,
             _leaseOwner,
-            heartbeatCancellation.Token
+            heartbeatCancellation.Token,
+            executionCancellation
         );
 
         try
         {
             var response = await dataExtractionClient.GetAsync(
                 job.PayloadUrl,
-                cancellationToken
+                executionCancellation.Token
             );
             ValidatePayload(job, response);
             var payload = response.Payload.Deserialize<AiPricingEmailPayload>(
@@ -516,7 +491,7 @@ internal sealed class AiEmailAnalysisWorker(
                 var aiInput = stageInputs[stageIndex];
                 var result = await orchestrator.ExecuteStructuredAsync(
                     aiInput,
-                    cancellationToken
+                    executionCancellation.Token
                 );
 
                 if (result.IsFailure)
@@ -742,10 +717,25 @@ internal sealed class AiEmailAnalysisWorker(
                     DateTime.UtcNow
                 );
 
-            await dbContext.ExecuteInRetryableTransactionAsync(
+            // The October cleanup can cancel a processing lease while Ollama
+            // is still returning. Reload under a row lock before publishing any
+            // completion event so a cancelled source cannot be resurrected.
+            var completedJobId = job.Id;
+            dbContext.ChangeTracker.Clear();
+            var committed = await dbContext.ExecuteInRetryableTransactionAsync<bool>(
                 async () =>
                 {
-                    job.MarkCompleted(
+                    var current = await dbContext.AiEmailAnalysisJobs
+                        .FromSqlInterpolated($"""
+                            SELECT * FROM ai."AiEmailAnalysisJobs"
+                            WHERE id = {completedJobId}
+                            FOR UPDATE
+                            """)
+                        .SingleOrDefaultAsync(cancellationToken);
+                    if (current?.Status != AiEmailAnalysisJobStatus.Processing)
+                        return false;
+
+                    current.MarkCompleted(
                         primaryResult.ExecutionId,
                         JsonSerializer.Serialize(parsed, JsonOptions)
                     );
@@ -772,7 +762,7 @@ internal sealed class AiEmailAnalysisWorker(
                             Payload: new
                             {
                                 Stage = "email-analysis-completed",
-                                Job = CreateJobAuditSnapshot(job),
+                                Job = CreateJobAuditSnapshot(current),
                                 AiServiceInputs = stageInputs,
                                 AiServiceOutputs = successfulOutputs,
                                 ParsedOutput = parsed,
@@ -789,10 +779,19 @@ internal sealed class AiEmailAnalysisWorker(
                         cancellationToken
                     );
                     await dbContext.SaveChangesAsync(cancellationToken);
+                    return true;
                 },
                 IsolationLevel.ReadCommitted,
                 cancellationToken
             );
+
+            if (!committed)
+            {
+                logger.LogInformation(
+                    "Se descartó una respuesta tardía de Ollama para el trabajo AI {AiJobId}: " +
+                    "la solicitud ya fue cancelada o finalizada.", completedJobId);
+                return;
+            }
 
             logger.LogInformation(
                 "Análisis AI de correo completado. AI job {AiJobId}; "
@@ -802,7 +801,7 @@ internal sealed class AiEmailAnalysisWorker(
                     + "RequestHash {RequestHash}.",
                 job.Id,
                 job.ExternalRequestId,
-                job.AiExecutionId,
+                primaryResult.ExecutionId,
                 job.EmailExtractionJobId,
                 job.AttemptCount,
                 parsed.Rows.Count,
@@ -813,6 +812,13 @@ internal sealed class AiEmailAnalysisWorker(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException) when (executionCancellation.IsCancellationRequested)
+        {
+            logger.LogInformation(
+                "Ejecución de Ollama interrumpida para AI job {AiJobId}: el lease ya fue cancelado.",
+                job.Id);
+            return;
         }
         catch (AiEmailJobException exception)
         {
@@ -1415,7 +1421,8 @@ internal sealed class AiEmailAnalysisWorker(
     private async Task RenewLeaseLoopAsync(
         Guid jobId,
         string leaseOwner,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        CancellationTokenSource executionCancellation
     )
     {
         var heartbeatSeconds = Math.Max(
@@ -1440,6 +1447,7 @@ internal sealed class AiEmailAnalysisWorker(
             )
         )
         {
+            executionCancellation.Cancel();
             return;
         }
 
@@ -1457,6 +1465,7 @@ internal sealed class AiEmailAnalysisWorker(
                 )
             )
             {
+                executionCancellation.Cancel();
                 return;
             }
         }

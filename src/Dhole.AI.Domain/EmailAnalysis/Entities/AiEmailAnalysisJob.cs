@@ -277,7 +277,17 @@ public sealed class AiEmailAnalysisJob : AuditableAggregateRoot<Guid>
     /// Closes obsolete jobs without reporting them as model failures. Source
     /// email and import history remain unchanged in DataExtraction.
     /// </summary>
-    public void CancelHistoricalMonth()
+    public void CancelHistoricalMonth() =>
+        CancelUnavailableSource(
+            "AI.HistoricalMonthClosed",
+            "La extracción pertenece a un mes anterior y fue archivada."
+        );
+
+    /// <summary>
+    /// Cancels a job whose upstream request/email was deleted, archived or closed.
+    /// The cancellation is terminal and never emits a model-failure event.
+    /// </summary>
+    public void CancelUnavailableSource(string errorCode, string errorMessage)
     {
         if (Status is AiEmailAnalysisJobStatus.Completed
             or AiEmailAnalysisJobStatus.Failed
@@ -285,8 +295,11 @@ public sealed class AiEmailAnalysisJob : AuditableAggregateRoot<Guid>
             return;
 
         Status = AiEmailAnalysisJobStatus.Cancelled;
-        ErrorCode = "AI.HistoricalMonthClosed";
-        ErrorMessage = "La extracción pertenece a un mes anterior y fue archivada.";
+        ErrorCode = Required(errorCode, "El código de cancelación es requerido.");
+        ErrorMessage = Limit(
+            Required(errorMessage, "El motivo de cancelación es requerido."),
+            4000
+        );
         NextAttemptAtUtc = null;
         CompletedAtUtc = DateTime.UtcNow;
         ReleaseLeaseCore();

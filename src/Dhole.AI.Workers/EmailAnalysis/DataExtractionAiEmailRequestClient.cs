@@ -20,7 +20,8 @@ internal interface IDataExtractionAiEmailRequestClient
 internal sealed record AiEmailReconciliationStatus(
     Guid RequestId,
     bool ShouldCancel,
-    string Reason
+    string Reason,
+    DateTime? SourceReceivedAtUtc
 );
 
 internal sealed record AiEmailReconciliationResponse(

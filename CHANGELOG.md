@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.9] - 2026-11-06
+
+- Cancela automáticamente trabajos Pending, RetryScheduled y Processing vinculados a correos recibidos originalmente en octubre de 2026, incluso si el trabajo AI se creó en noviembre.
+- Consulta la fecha original en DataExtraction y usa la zona horaria de Costa Rica; conserva correos de noviembre, resultados completados y auditoría.
+- Aborta ejecuciones activas cuando pierden el lease y bloquea la publicación tardía de resultados para trabajos cancelados.
+- Pruebas de límites de octubre, retención de noviembre y cancelación de trabajos en proceso.
+- Ecosistema Dhole 1.3.12, release DH-20261106-OCTOBER-EMAIL-AI-QUEUE-014.
+
 ## [1.3.8] - 2026-11-06
 
 - Distingue ejecución de modelo completada con revisión posterior de un fallo real de inferencia en el estado operativo.

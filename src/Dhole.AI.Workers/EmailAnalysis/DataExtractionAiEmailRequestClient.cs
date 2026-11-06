@@ -339,6 +339,12 @@ internal sealed class DataExtractionAiEmailRequestClient(
                 "DataExtraction archivó el correo anterior al mes actual.",
                 isTransient: false);
 
+        if (statusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict)
+            return new AiEmailJobException(
+                "AI.SourceUnavailable",
+                "DataExtraction ya no tiene activa la solicitud o su correo original.",
+                isTransient: false);
+
         var isTransient =
             statusCode
             is HttpStatusCode.RequestTimeout

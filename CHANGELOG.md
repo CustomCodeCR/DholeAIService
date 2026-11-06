@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.1] - 2026-11-05
+
+- Habilita despliegue automático del servicio de IA en cada push a master; elimina el job skipped por autorización manual.
+- Conserva staging en develop y verifica versión SemVer del release.
+
 ## [1.3.0] - 2026-11-05
 
 - Procesamiento de hasta 32 análisis de correo por lote, cuatro slots aislados.

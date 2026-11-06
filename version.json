@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "ecosystem": "Dhole",
   "component": "DholeAIService",
-  "version": "1.3.5",
-  "ecosystemVersion": "1.3.8",
-  "releaseId": "DH-20261106-AI-THROUGHPUT-010"
+  "version": "1.3.6",
+  "ecosystemVersion": "1.3.9",
+  "releaseId": "DH-20261106-HISTORICAL-CLOSE-011"
 }

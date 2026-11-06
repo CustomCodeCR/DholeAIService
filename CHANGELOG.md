@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.6] - 2026-11-06
+
+- Cierra solicitudes AI antiguas en estado Pending/RetryScheduled sin invocar Ollama ni borrar filas históricas.
+- Reconoce HTTP 410 de DataExtraction en correos anteriores al mes actual y usa el estado Cancelled en vez de Failed.
+- Evita reintentos y eventos fallidos para extracciones archivadas, conservando jobs completados.
+- Ecosistema Dhole 1.3.9, release DH-20261106-HISTORICAL-CLOSE-011.
+
+
 ## [1.3.5] - 2026-11-06
 
 - Reduce la salida de Qwen: filas tarifarias JSON omiten columnas sin dato en lugar de repetir 22 campos null por tarifa.

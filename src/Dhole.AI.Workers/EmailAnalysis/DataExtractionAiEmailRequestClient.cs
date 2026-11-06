@@ -283,6 +283,12 @@ internal sealed class DataExtractionAiEmailRequestClient(
         HttpStatusCode statusCode
     )
     {
+        if (statusCode == HttpStatusCode.Gone)
+            return new AiEmailJobException(
+                "AI.HistoricalMonthClosed",
+                "DataExtraction archivó el correo anterior al mes actual.",
+                isTransient: false);
+
         var isTransient =
             statusCode
             is HttpStatusCode.RequestTimeout

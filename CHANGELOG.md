@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.2] - 2026-11-05
+
+- Elimina limpieza destructiva de ramas remotas desde despliegues AI.
+- Reintenta clonación de infraestructura ante errores transitorios de DNS en master y develop.
+
+
 ## [1.3.1] - 2026-11-05
 
 - Elimina el skipped por gate manual del deploy de Dhole AI en master.

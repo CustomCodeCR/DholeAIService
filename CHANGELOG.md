@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.4] - 2026-11-06
+
+- Mantiene Qwen 3.5 residente 15 minutos en trabajos estructurados para evitar recargas por cada correo.
+- Utiliza modo JSON ligero para Qwen 3.5 y conserva validación de contenido y extracción normalizada en Dhole.
+- Evita el coste repetido de gramáticas JSON complejas que causa timeouts y respuestas inválidas, sin eliminar control de concurrencia.
+- Ecosistema Dhole 1.3.7, release DH-20261106-AI-RELIABILITY-009.
+
+
 ## [1.3.3] - 2026-11-06
 
 - Recupera solicitudes AI en cola con resultados anteriores del mismo correo, adjunto y hash; republica el evento de finalización de forma transaccional sin reenviar al modelo.

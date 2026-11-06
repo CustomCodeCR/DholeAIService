@@ -82,13 +82,7 @@ internal static class PricingEmailAiExecutionFactory
                   "spaceComment": { "type": ["string", "null"] },
                   "remarks": { "type": ["string", "null"] }
                 },
-                "required": [
-                  "pol", "poe", "pod", "containerType", "carrier", "agent",
-                  "commodity", "currency", "freeDays", "transitDays",
-                  "validFrom", "validTo", "oceanFreight", "originCharges",
-                  "destinationCharges", "surcharges", "totalCost", "totalSale",
-                  "profit", "margin", "spaceComment", "remarks"
-                ]
+                "required": []
               }
             },
             "warnings": {
@@ -239,7 +233,22 @@ internal static class PricingEmailAiExecutionFactory
         var prompt = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "pricing-email-v17-reviewed-mode-learning",
+                taskVersion = "pricing-email-v18-compact-output",
+                outputContract = new
+                {
+                    // Qwen 3.5 uses Ollama JSON mode, not the full JSON schema grammar.
+                    // Supply the small, explicit wire contract in the actual prompt.
+                    root = "JSON object: success (boolean), confidence (0-100), rows (array), warnings (array of strings)",
+                    rowKeys = new[]
+                    {
+                        "pol", "poe", "pod", "containerType", "carrier", "agent",
+                        "commodity", "currency", "freeDays", "transitDays",
+                        "validFrom", "validTo", "oceanFreight", "originCharges",
+                        "destinationCharges", "surcharges", "totalCost", "totalSale",
+                        "profit", "margin", "spaceComment", "remarks",
+                    },
+                    optionalFields = "En cada fila incluye solamente campos presentes en la evidencia; omite los campos desconocidos (no produzcas nulls repetidos). Las fechas son YYYY-MM-DD y los montos numéricos. Mantén todas las filas y sus valores.",
+                },
                 stage = new
                 {
                     name = stage.Name,
@@ -251,7 +260,7 @@ internal static class PricingEmailAiExecutionFactory
                 },
                 rules = new[]
                 {
-                    "Devuelve solo el JSON del esquema; no inventes valores.",
+                    "Devuelve únicamente un objeto JSON con success, confidence, rows y warnings. Cada fila utiliza las claves de outputContract.rowKeys; omite propiedades sin evidencia, nunca inventes valores ni filas.",
                     "Procesa también tarifas LCL, aéreas y terrestres. Conserva la unidad publicada (W/M, CBM, KG/VOL, tonelada, kg, mínimo) en remarks; no conviertas tarifas unitarias en totales por contenedor ni uses el mínimo como tarifa unitaria.",
                     "Si la fuente dice AEREO/AÉREO/AIR, KG/VOL, AIRLINE/AEROLÍNEA o publica una matriz aérea con Mínimo y breakpoints de peso (+100 y otros como +300, +500 o +1000), usa containerType=AIR. La palabra Consolidado/B2B en ese contexto sigue siendo servicio aéreo: no lo clasifiques como LCL marítimo ni FCL.",
                     "En tarifas aéreas, pol y poe son aeropuertos. Prefiere códigos IATA explícitos. Para tarifarios PIER 17 de Miami a Costa Rica usa MIA como pol y SJO como poe cuando esa ruta queda respaldada por subject/emailContext/adjunto; para España/Madrid usa MAD -> SJO.",

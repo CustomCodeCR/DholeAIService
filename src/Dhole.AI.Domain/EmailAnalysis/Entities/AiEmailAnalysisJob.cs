@@ -273,6 +273,26 @@ public sealed class AiEmailAnalysisJob : AuditableAggregateRoot<Guid>
         Touch(DateTime.UtcNow);
     }
 
+    /// <summary>
+    /// Closes obsolete jobs without reporting them as model failures. Source
+    /// email and import history remain unchanged in DataExtraction.
+    /// </summary>
+    public void CancelHistoricalMonth()
+    {
+        if (Status is AiEmailAnalysisJobStatus.Completed
+            or AiEmailAnalysisJobStatus.Failed
+            or AiEmailAnalysisJobStatus.Cancelled)
+            return;
+
+        Status = AiEmailAnalysisJobStatus.Cancelled;
+        ErrorCode = "AI.HistoricalMonthClosed";
+        ErrorMessage = "La extracción pertenece a un mes anterior y fue archivada.";
+        NextAttemptAtUtc = null;
+        CompletedAtUtc = DateTime.UtcNow;
+        ReleaseLeaseCore();
+        Touch(CompletedAtUtc.Value);
+    }
+
     public void MarkFailed(
         string errorCode,
         string errorMessage,

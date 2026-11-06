@@ -56,6 +56,7 @@ internal sealed class AiEmailAnalysisWorker(
     internal async Task PrepareAsync(CancellationToken cancellationToken)
     {
         dbContext.ChangeTracker.Clear();
+        await CancelPreviousMonthQueueAsync(cancellationToken);
         await CompleteQueuedJobsWithExistingResultsAsync(cancellationToken);
         await ApplyConfiguredAttemptLimitAsync(cancellationToken);
         await RecoverStaleExecutionsAsync(cancellationToken);
@@ -86,6 +87,51 @@ internal sealed class AiEmailAnalysisWorker(
 
             await ProcessAsync(job, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Stops jobs enqueued before the current Costa Rican month. More recent
+    /// AI jobs from old emails are rejected by DataExtraction's HTTP 410 gate.
+    /// This step never calls Ollama or deletes durable job history.
+    /// </summary>
+    private async Task CancelPreviousMonthQueueAsync(CancellationToken cancellationToken)
+    {
+        var costaRica = TimeZoneInfo.FindSystemTimeZoneById("America/Costa_Rica");
+        var nowLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, costaRica);
+        var monthStartUtc = TimeZoneInfo.ConvertTimeToUtc(
+            new DateTime(nowLocal.Year, nowLocal.Month, 1), costaRica);
+
+        var closed = 0;
+        await dbContext.ExecuteInRetryableTransactionAsync(
+            async () =>
+            {
+                var candidates = await dbContext.AiEmailAnalysisJobs
+                    .FromSqlInterpolated($"""
+                        SELECT *
+                        FROM ai."AiEmailAnalysisJobs"
+                        WHERE status IN ('Pending', 'RetryScheduled')
+                          AND created_at_utc < {monthStartUtc}
+                        ORDER BY created_at_utc
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 200
+                        """)
+                    .ToListAsync(cancellationToken);
+                foreach (var item in candidates)
+                {
+                    item.CancelHistoricalMonth();
+                    closed++;
+                }
+
+                if (closed > 0)
+                    await dbContext.SaveChangesAsync(cancellationToken);
+            },
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+        dbContext.ChangeTracker.Clear();
+        if (closed > 0)
+            logger.LogInformation(
+                "Se cerraron {Count} solicitudes AI antiguas sin llamar a Ollama.",
+                closed);
     }
 
     /// <summary>
@@ -756,6 +802,7 @@ internal sealed class AiEmailAnalysisWorker(
             job.Status
             is AiEmailAnalysisJobStatus.Completed
                 or AiEmailAnalysisJobStatus.Failed
+                or AiEmailAnalysisJobStatus.Cancelled
         )
         {
             return;
@@ -766,6 +813,18 @@ internal sealed class AiEmailAnalysisWorker(
             throw new InvalidOperationException(
                 $"El AI job {job.Id} no está en Processing al registrar el fallo."
             );
+        }
+
+        // DataExtraction rejected an obsolete email before handing over its
+        // content; do not retry or record this expected closure as an AI failure.
+        if (errorCode == "AI.HistoricalMonthClosed")
+        {
+            job.CancelHistoricalMonth();
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "AI job {AiJobId} cerrado por antigüedad sin ejecutar Ollama.",
+                job.Id);
+            return;
         }
 
         var shouldRetry =

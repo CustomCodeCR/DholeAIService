@@ -174,6 +174,30 @@ public sealed class AiEmailAnalysisJob : AuditableAggregateRoot<Guid>
         Touch(CompletedAtUtc.Value);
     }
 
+    /// <summary>
+    /// Reuses a successful result for an identical source/hash without running Ollama
+    /// a second time. The new request still receives its own completed event.
+    /// </summary>
+    public void CompleteFromPriorResult(Guid aiExecutionId, string resultJson)
+    {
+        if (Status is not AiEmailAnalysisJobStatus.Pending
+            and not AiEmailAnalysisJobStatus.RetryScheduled)
+            throw new InvalidOperationException("Solo trabajos pendientes pueden reutilizar una extracción.");
+
+        if (aiExecutionId == Guid.Empty || string.IsNullOrWhiteSpace(resultJson))
+            throw new InvalidOperationException("El resultado anterior debe estar completo.");
+
+        AiExecutionId = aiExecutionId;
+        ResultJson = resultJson;
+        Status = AiEmailAnalysisJobStatus.Completed;
+        ErrorCode = null;
+        ErrorMessage = null;
+        NextAttemptAtUtc = null;
+        CompletedAtUtc = DateTime.UtcNow;
+        ReleaseLeaseCore();
+        Touch(CompletedAtUtc.Value);
+    }
+
     public void ScheduleRetry(
         string errorCode,
         string errorMessage,

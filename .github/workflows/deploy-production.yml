@@ -24,7 +24,19 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf .dhole-system
-          git clone --depth 1 --branch master https://github.com/CustomCodeCR/DholeSystem.git .dhole-system
+          for attempt in 1 2 3 4 5; do
+            if git clone --depth 1 --branch master https://github.com/CustomCodeCR/DholeSystem.git .dhole-system; then
+              break
+            fi
+            rm -rf .dhole-system
+            if (( attempt == 5 )); then
+              echo '::error::DholeSystem checkout unavailable after 5 attempts; inspect runner DNS and HTTPS.'
+              getent ahostsv4 github.com || true
+              exit 1
+            fi
+            echo "::warning::Transient checkout failure, retry $attempt/5"
+            sleep $((attempt * 5))
+          done
           mkdir -p "$RUNNER_TEMP/dhole-env"
           bash .dhole-system/deploy/prepare-environments.sh /opt/dhole/.env "$RUNNER_TEMP/dhole-env"
           echo "DHOLE_ENV_FILE=$RUNNER_TEMP/dhole-env/.env.production" >> "$GITHUB_ENV"
@@ -78,10 +90,7 @@ jobs:
           set -euo pipefail
           docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" up -d --no-deps --force-recreate --pull never ai-api ai-workers
           docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" ps ai-api ai-workers
-      - name: Keep only master and develop branches
-        run: |
-          set -euo pipefail
-          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
-          while IFS= read -r branch; do case "$branch" in master|develop) continue ;; esac; git push origin --delete "$branch"; done < <(git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin | grep -v '^HEAD$' || true)
       - name: Cleanup old images
+        if: always()
+        continue-on-error: true
         run: docker image prune -f

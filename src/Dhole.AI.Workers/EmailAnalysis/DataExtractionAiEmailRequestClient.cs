@@ -10,7 +10,22 @@ internal interface IDataExtractionAiEmailRequestClient
         string payloadUrl,
         CancellationToken cancellationToken
     );
+
+    Task<IReadOnlyList<AiEmailReconciliationStatus>> ReconcileAsync(
+        IReadOnlyCollection<Guid> requestIds,
+        CancellationToken cancellationToken
+    );
 }
+
+internal sealed record AiEmailReconciliationStatus(
+    Guid RequestId,
+    bool ShouldCancel,
+    string Reason
+);
+
+internal sealed record AiEmailReconciliationResponse(
+    IReadOnlyList<AiEmailReconciliationStatus> Items
+);
 
 internal sealed class DataExtractionAiEmailRequestClient(
     HttpClient httpClient,
@@ -63,6 +78,41 @@ internal sealed class DataExtractionAiEmailRequestClient(
             );
 
         return HardenSourceIsolation(result);
+    }
+
+    public async Task<IReadOnlyList<AiEmailReconciliationStatus>> ReconcileAsync(
+        IReadOnlyCollection<Guid> requestIds,
+        CancellationToken cancellationToken
+    )
+    {
+        if (requestIds.Count == 0)
+            return Array.Empty<AiEmailReconciliationStatus>();
+
+        if (requestIds.Count > 250)
+            throw new ArgumentOutOfRangeException(nameof(requestIds));
+
+        var endpoint = ResolveEndpoint(
+            CanonicalRequestPath + "00000000-0000-0000-0000-000000000000"
+        );
+        var reconcileUrl = new Uri(endpoint, CanonicalRequestPath + "reconcile");
+        using var timeout = CreateTimeout(cancellationToken);
+        using var response = await httpClient.PostAsJsonAsync(
+            reconcileUrl,
+            new { requestIds },
+            JsonOptions,
+            timeout.Token
+        );
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<AiEmailReconciliationResponse>(
+            JsonOptions,
+            timeout.Token
+        ) ?? throw new InvalidOperationException(
+            "DataExtraction no devolvió la conciliación de solicitudes AI."
+        );
+        return result.Items
+            ?? throw new InvalidOperationException(
+                "DataExtraction devolvió una lista de conciliación nula."
+            );
     }
 
     private static DataExtractionAiEmailRequestResponse HardenSourceIsolation(

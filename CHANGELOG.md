@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.2] - 2026-11-05
+
+- Evita borrar ramas remotas desde el despliegue AI; las ramas de trabajo y release permanecen intactas.
+- Añade reintentos de clonación frente a errores transitorios de DNS en staging y producción.
+
 ## [1.3.1] - 2026-11-05
 
 - Habilita despliegue automático del servicio de IA en cada push a master; elimina el job skipped por autorización manual.

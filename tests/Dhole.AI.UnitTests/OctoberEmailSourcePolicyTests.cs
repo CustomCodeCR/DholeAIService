@@ -44,7 +44,7 @@ public sealed class OctoberEmailSourcePolicyTests
         Assert.AreEqual(AiEmailAnalysisJobStatus.Cancelled, job.Status);
         Assert.IsNull(job.LeaseOwner);
         Assert.IsNotNull(job.CompletedAtUtc);
-        Assert.ThrowsException<InvalidOperationException>(
+        Assert.ThrowsExactly<InvalidOperationException>(
             () => job.MarkCompleted(Guid.NewGuid(), """{"confidence":85}"""));
         Assert.AreEqual(AiEmailAnalysisJobStatus.Cancelled, job.Status);
     }

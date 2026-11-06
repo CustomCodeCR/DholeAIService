@@ -56,6 +56,7 @@ internal sealed class AiEmailAnalysisWorker(
     internal async Task PrepareAsync(CancellationToken cancellationToken)
     {
         dbContext.ChangeTracker.Clear();
+        await CompleteQueuedJobsWithExistingResultsAsync(cancellationToken);
         await ApplyConfiguredAttemptLimitAsync(cancellationToken);
         await RecoverStaleExecutionsAsync(cancellationToken);
         await RecoverFailedLeaseJobsAsync(cancellationToken);
@@ -85,6 +86,107 @@ internal sealed class AiEmailAnalysisWorker(
 
             await ProcessAsync(job, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Safely drains historical duplicate queue entries when an identical email
+    /// attachment/body already has a completed AI result. Replays the completion
+    /// through the transactional outbox; no email or business result is deleted.
+    /// </summary>
+    private async Task CompleteQueuedJobsWithExistingResultsAsync(
+        CancellationToken cancellationToken)
+    {
+        await dbContext.ExecuteInRetryableTransactionAsync(
+            async () =>
+            {
+                var queued = await dbContext.AiEmailAnalysisJobs
+                    .FromSqlRaw(
+                        """
+                        SELECT *
+                        FROM ai."AiEmailAnalysisJobs"
+                        WHERE status IN ('Pending', 'RetryScheduled')
+                        ORDER BY created_at_utc
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 100
+                        """
+                    )
+                    .ToListAsync(cancellationToken);
+                if (queued.Count == 0)
+                    return;
+
+                var messageIds = queued.Select(job => job.EmailMessageId)
+                    .Distinct().ToArray();
+                var completed = await dbContext.AiEmailAnalysisJobs
+                    .AsNoTracking()
+                    .Where(job => messageIds.Contains(job.EmailMessageId)
+                        && job.Status == AiEmailAnalysisJobStatus.Completed
+                        && job.AiExecutionId.HasValue
+                        && job.ResultJson != null)
+                    .OrderByDescending(job => job.CompletedAtUtc)
+                    .Take(500)
+                    .ToListAsync(cancellationToken);
+
+                var recovered = 0;
+                foreach (var job in queued)
+                {
+                    var previous = completed.FirstOrDefault(result =>
+                        result.EmailMessageId == job.EmailMessageId
+                        && result.EmailAttachmentId == job.EmailAttachmentId
+                        && result.RequestHash == job.RequestHash);
+                    if (previous is null || !previous.AiExecutionId.HasValue
+                        || string.IsNullOrWhiteSpace(previous.ResultJson))
+                        continue;
+
+                    ParsedAiPricingEmailResult? parsed;
+                    try
+                    {
+                        parsed = JsonSerializer.Deserialize<ParsedAiPricingEmailResult>(
+                            previous.ResultJson, JsonOptions);
+                    }
+                    catch (JsonException exception)
+                    {
+                        logger.LogWarning(exception,
+                            "Resultado previo no válido para reutilizar AI job {AiJobId}.", job.Id);
+                        continue;
+                    }
+                    if (parsed is null)
+                        continue;
+
+                    job.CompleteFromPriorResult(
+                        previous.AiExecutionId.Value, previous.ResultJson);
+                    var completedEvent = new AiPricingEmailAnalysisCompletedIntegrationEvent(
+                        Guid.NewGuid(),
+                        job.ExternalRequestId,
+                        job.EmailExtractionJobId,
+                        job.Id,
+                        previous.AiExecutionId.Value,
+                        job.CorrelationId,
+                        job.RequestHash,
+                        parsed.Confidence,
+                        parsed.Rows,
+                        parsed.Warnings,
+                        DateTime.UtcNow
+                    );
+                    await outbox.WriteAsync(
+                        typeof(AiPricingEmailAnalysisCompletedIntegrationEvent).FullName!,
+                        EmailAnalysisMessageTypes.Completed,
+                        completedEvent,
+                        job.CorrelationId,
+                        cancellationToken);
+                    recovered++;
+                }
+
+                if (recovered > 0)
+                {
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    logger.LogInformation(
+                        "Se recuperaron {Count} trabajos AI duplicados utilizando resultados previos, sin llamar a Ollama.",
+                        recovered);
+                }
+            },
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+        dbContext.ChangeTracker.Clear();
     }
 
     private async Task ApplyConfiguredAttemptLimitAsync(

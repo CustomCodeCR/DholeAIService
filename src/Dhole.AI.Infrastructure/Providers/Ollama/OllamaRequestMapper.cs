@@ -59,9 +59,14 @@ internal static class OllamaRequestMapper
         // Do not evict Qwen after each email. Repeated cold loads consume most of
         // the throughput of a small, continuous email queue. Legacy or infrequently
         // selected structured models retain the old eviction behavior to avoid OOM.
-        payload["keep_alive"] = request.RequiresStructuredOutput
-            ? (IsQwen35(model) ? "15m" : "0")
-            : "15m";
+        if (request.RequiresStructuredOutput && !IsQwen35(model))
+        {
+            payload["keep_alive"] = 0;
+        }
+        else
+        {
+            payload["keep_alive"] = "15m";
+        }
 
         if (request.RequiresStructuredOutput)
         {

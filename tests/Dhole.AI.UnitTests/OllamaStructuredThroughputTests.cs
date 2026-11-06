@@ -31,7 +31,7 @@ public sealed class OllamaStructuredThroughputTests
         var payload = OllamaRequestMapper.CreateChatPayload(
             Request(true), "some-structured-model:latest", false);
 
-        Assert.AreEqual("0", payload["keep_alive"]?.GetValue<string>());
+        Assert.AreEqual(0, payload["keep_alive"]?.GetValue<int>());
         Assert.IsNotNull(payload["format"]);
     }
 

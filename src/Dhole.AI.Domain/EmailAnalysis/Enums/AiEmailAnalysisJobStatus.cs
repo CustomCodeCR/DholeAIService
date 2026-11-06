@@ -7,4 +7,5 @@ public enum AiEmailAnalysisJobStatus
     Completed = 3,
     RetryScheduled = 4,
     Failed = 5,
+    Cancelled = 6,
 }

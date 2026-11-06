@@ -101,6 +101,13 @@ builder.Services.AddHttpClient("overpass-kumi", client =>
 builder.Services.AddScoped<AiFileChatService>();
 
 var app = builder.Build();
+// Publish this running AI service's assembly version on health endpoints.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.Value?.StartsWith("/health", StringComparison.OrdinalIgnoreCase) == true)
+        context.Response.Headers["X-Dhole-Version"] = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+    await next();
+});
 
 app.UseCustomCodeApi();
 

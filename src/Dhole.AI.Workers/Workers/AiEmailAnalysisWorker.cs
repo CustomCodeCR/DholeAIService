@@ -413,17 +413,20 @@ internal sealed class AiEmailAnalysisWorker(
 
         using var heartbeatCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var executionCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var heartbeatTask = RenewLeaseLoopAsync(
             job.Id,
             _leaseOwner,
-            heartbeatCancellation.Token
+            heartbeatCancellation.Token,
+            executionCancellation
         );
 
         try
         {
             var response = await dataExtractionClient.GetAsync(
                 job.PayloadUrl,
-                cancellationToken
+                executionCancellation.Token
             );
             ValidatePayload(job, response);
             var payload = response.Payload.Deserialize<AiPricingEmailPayload>(
@@ -488,7 +491,7 @@ internal sealed class AiEmailAnalysisWorker(
                 var aiInput = stageInputs[stageIndex];
                 var result = await orchestrator.ExecuteStructuredAsync(
                     aiInput,
-                    cancellationToken
+                    executionCancellation.Token
                 );
 
                 if (result.IsFailure)
@@ -809,6 +812,13 @@ internal sealed class AiEmailAnalysisWorker(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException) when (executionCancellation.IsCancellationRequested)
+        {
+            logger.LogInformation(
+                "Ejecución de Ollama interrumpida para AI job {AiJobId}: el lease ya fue cancelado.",
+                job.Id);
+            return;
         }
         catch (AiEmailJobException exception)
         {
@@ -1411,7 +1421,8 @@ internal sealed class AiEmailAnalysisWorker(
     private async Task RenewLeaseLoopAsync(
         Guid jobId,
         string leaseOwner,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        CancellationTokenSource executionCancellation
     )
     {
         var heartbeatSeconds = Math.Max(
@@ -1436,6 +1447,7 @@ internal sealed class AiEmailAnalysisWorker(
             )
         )
         {
+            executionCancellation.Cancel();
             return;
         }
 
@@ -1453,6 +1465,7 @@ internal sealed class AiEmailAnalysisWorker(
                 )
             )
             {
+                executionCancellation.Cancel();
                 return;
             }
         }

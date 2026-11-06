@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.3.1] - 2026-11-05
+
+- Publicar versión desplegada de Dhole AI en health checks.
+
 ## [1.3.0] - 2026-11-05
 
 - Procesamiento de hasta 32 análisis de correo por lote, cuatro slots aislados.

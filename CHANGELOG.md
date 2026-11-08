@@ -1,5 +1,7 @@
 # Changelog
 
+- F6.11 (candidato): GET autorizado `realtime-access/emailjob/{id}` devuelve snapshot mínimo de estado, intentos y fechas, sin payload, correo, resultado del modelo ni credenciales; ACL de `ExecutionView` preservada.
+
 ## [1.4.0] - 2026-11-08 (candidato F6.11, sin publicar)
 
 - F6.11: productores realtime transaccionales para ejecuciones y trabajos de análisis IA, reutilizando Outbox existente del servicio y un Redis Stream independiente.

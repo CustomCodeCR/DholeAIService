@@ -15,11 +15,26 @@ public static class RealtimeAccessEndpoints
         var group = app.MapGroup("/api/ai/realtime-access")
             .WithTags("Realtime Access").RequireAuthorization();
 
+        // An ACL-only GET is insufficient for reconnecting browsers: provide a
+        // narrowly scoped authoritative status snapshot without email, model
+        // output, payload URL, request hash or correlation metadata.
         group.MapGet("/emailjob/{id:guid}", async (Guid id, ServiceDbContext db, CancellationToken ct) =>
         {
-            var exists = await db.AiEmailAnalysisJobs.AsNoTracking()
-                .AnyAsync(x => x.Id == id, ct);
-            return exists ? Results.Ok() : Results.NotFound();
+            var snapshot = await db.AiEmailAnalysisJobs.AsNoTracking()
+                .Where(x => x.Id == id)
+                .Select(x => new
+                {
+                    x.Id,
+                    x.Status,
+                    x.Version,
+                    x.AttemptCount,
+                    x.MaxAttemptCount,
+                    x.NextAttemptAtUtc,
+                    x.StartedAtUtc,
+                    x.CompletedAtUtc,
+                    x.AiExecutionId
+                }).FirstOrDefaultAsync(ct);
+            return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
         }).RequireScope(AiScopeNames.ExecutionView);
         return app;
     }

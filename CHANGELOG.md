@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0] - 2026-11-08 (candidato F6.11, sin publicar)
+
+- F6.11: productores realtime transaccionales para ejecuciones y trabajos de análisis IA, reutilizando Outbox existente del servicio y un Redis Stream independiente.
+- Los mensajes incluyen únicamente identificador del recurso, tipo de cambio, versión-hint y trazabilidad mínima, nunca correos, documentos, prompts, respuestas, URLs privadas ni credenciales.
+- El consumidor debe reconciliar mediante REST autorizado, especialmente al comparar eventos originados por réplicas distintas. Cuatro flags de batch OFF por defecto.
+- Componente 1.3.9 → 1.4.0; ecosistema propuesto 1.13.0. No se ha promovido develop/master ni desplegado.
+
 ## [1.3.9] - 2026-11-06
 
 - Cancela automáticamente trabajos Pending, RetryScheduled y Processing vinculados a correos recibidos originalmente en octubre de 2026, incluso si el trabajo AI se creó en noviembre.

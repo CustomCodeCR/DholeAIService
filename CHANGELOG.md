@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.4.1] - 2026-11-08 (candidato F9, sin publicación)
+
+- Sincroniza metadatos de versión global del batch Dhole Realtime `rt-20261107-01` a `1.13.10`; actualización PATCH independiente de DholeAIService `1.4.0` → `1.4.1`. No cambia contratos REST, datos, lógica de negocio ni flags; requiere gates F0–F8 y CI de SHA final antes de merge.
+
+
 - F6.11 (candidato): GET autorizado `realtime-access/emailjob/{id}` devuelve snapshot mínimo de estado, intentos y fechas, sin payload, correo, resultado del modelo ni credenciales; ACL de `ExecutionView` preservada.
 
 ## [1.4.0] - 2026-11-08 (candidato F6.11, sin publicar)

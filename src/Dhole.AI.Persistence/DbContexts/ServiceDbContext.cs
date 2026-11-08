@@ -13,10 +13,12 @@ using Dhole.AI.Domain.PromptTemplates.Entities;
 using Dhole.AI.Persistence.Auditing;
 using Dhole.AI.Persistence.Messaging;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 
 namespace Dhole.AI.Persistence.DbContexts;
 
-public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
+public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options,
+    IConfiguration? realtimeConfiguration = null)
     : AppDbContextBase(options)
 {
     private const string SourceService = "DholeAIService";
@@ -44,6 +46,7 @@ public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
+        AppendJobInvalidations();
         AddDomainEventsToOutbox();
 
         return base.SaveChangesAsync(cancellationToken);
@@ -51,6 +54,7 @@ public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
 
     public override int SaveChanges()
     {
+        AppendJobInvalidations();
         AddDomainEventsToOutbox();
 
         return base.SaveChanges();
@@ -67,6 +71,42 @@ public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
         modelBuilder.ApplyConfiguration(new OutboxMessageConfiguration());
 
         modelBuilder.ApplyConfiguration(new InboxMessageConfiguration());
+    }
+
+    private void AppendJobInvalidations()
+    {
+        if (!AIRealtimeInvalidation.IsEnabled(realtimeConfiguration))
+            return;
+        ChangeTracker.DetectChanges();
+        foreach (var entry in ChangeTracker.Entries()
+            .Where(x => x.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+        {
+            var resource = entry.Entity switch
+            {
+                AiExecution x => ("execution", x.Id),
+                AiEmailAnalysisJob x => ("emailjob", x.Id),
+                _ => ("", Guid.Empty)
+            };
+            if (resource.Item2 == Guid.Empty) continue;
+            var eventId = Guid.NewGuid();
+            var now = DateTimeOffset.UtcNow;
+            var correlationId = eventId.ToString("D");
+            var eventName = AIRealtimeInvalidation.EventType(resource.Item1);
+            OutboxMessages.Add(new OutboxMessage
+            {
+                EventId = eventId,
+                EventName = eventName,
+                EventType = eventName,
+                SourceService = SourceService,
+                PayloadJson = AIRealtimeInvalidation.Serialize(
+                    eventId, resource.Item2, resource.Item1,
+                    AIRealtimeInvalidation.NextVersionHint(), now, correlationId),
+                CorrelationId = correlationId,
+                Status = OutboxMessageStatus.Pending,
+                RetryCount = 0,
+                CreatedAtUtc = now.UtcDateTime
+            });
+        }
     }
 
     private void AddDomainEventsToOutbox()

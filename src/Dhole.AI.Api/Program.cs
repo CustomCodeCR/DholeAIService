@@ -139,7 +139,6 @@ app.MapAiModelEndpoints();
 app.MapAiProfileEndpoints();
 app.MapAiPromptTemplateEndpoints();
 app.MapAiExecutionEndpoints();
-app.MapRealtimeAccessEndpoints();
 app.MapAiOperationsEndpoints();
 app.MapAiFileExecutionEndpoints();
 app.MapAiLogisticsV2Endpoints();

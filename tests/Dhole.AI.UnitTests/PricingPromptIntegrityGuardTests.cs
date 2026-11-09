@@ -35,7 +35,11 @@ public sealed class PricingPromptIntegrityGuardTests
         Assert.Contains("POD/POE heredado de la fila anterior", systemPrompt);
         Assert.Contains("No interpretes el carrier como POD/POE ni un monto como carrier", systemPrompt);
         Assert.Contains("Nunca copies el monto de 20' a 40DV o 40HC", systemPrompt);
+        Assert.Contains("cuatro filas comerciales", systemPrompt);
+        Assert.Contains("doce filas por equipo", systemPrompt);
         Assert.Contains("cada oceanFreight debe poder señalar una celda monetaria concreta", systemPrompt);
+        Assert.Contains("nunca restes ni sumes días por UTC", systemPrompt);
+        Assert.Contains("solo la sección tarifaria más reciente", systemPrompt);
         Assert.Contains("Xingang y Tianjin son identidades comerciales de POL distintas", systemPrompt);
         Assert.Contains("Tianjin(+arbUSD100)", systemPrompt);
         Assert.Contains("Chongqing(+arb USD850)", systemPrompt);

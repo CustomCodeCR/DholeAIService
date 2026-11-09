@@ -6,9 +6,11 @@
 - Ecosystem candidate 1.14.0 / 16 Dhole repositories, release `rt-20261107-01` in isolated branch `feature/rt-notificationshub-20261109-01`.
 - Staging deployment, operational audit and final integration remain pending. Production flags OFF.
 
+
 ## [1.4.6] - 2026-11-08 (Dhole realtime coordinated hardening)
 
 - PATCH 1.13.15 ecosystem release alignment with F2/F6 AOF read-only checks and F10 branch-preservation fix. Service candidate unchanged; realtime flags OFF and gates F6–F10 not formally approved.
+
 
 
 ## [1.4.5] - 2026-11-08 (F9 review candidate)
@@ -16,9 +18,11 @@
 - PATCH SemVer global 1.13.14 para excepción F3 en revisión de F9. Mantiene gates formales, flags OFF y prohibición de despliegue hasta verificar staging y durabilidad.
 
 
+
 ## [1.4.4] - 2026-11-08 (candidato F3)
 
 - Sincronización PATCH de la versión global 1.13.13 correspondiente al ensayo WSS/Traefik de DholeApiGateway; sin nuevas modificaciones funcionales ni despliegue.
+
 
 
 ## [1.4.3] - 2026-11-08 (F6/F9 staging-audit candidate)
@@ -26,9 +30,11 @@
 - Sincroniza Dhole Realtime `rt-20261107-01` a versión global `1.13.12` tras incorporar auditoría real de persistencia en staging. PATCH 1.4.2 → 1.4.3; no modifica rutas, eventos, datos, contratos REST ni flags. No se fusiona hasta completar gates formales.
 
 
+
 ## [1.4.2] - 2026-11-08 (candidato F9, sin publicar)
 
 - Sincroniza release global `rt-20261107-01` a `1.13.11` tras resolver los hallazgos de CI de Config, Reports y Gateway. Bump PATCH de DholeAIService `1.4.1` a `1.4.2`, sin modificar REST, eventos, precios ni datos; flags realtime OFF y PR F9 aún DRAFT.
+
 
 
 ## [1.4.1] - 2026-11-08 (candidato F9, sin publicación)
@@ -38,12 +44,14 @@
 
 - F6.11 (candidato): GET autorizado `realtime-access/emailjob/{id}` devuelve snapshot mínimo de estado, intentos y fechas, sin payload, correo, resultado del modelo ni credenciales; ACL de `ExecutionView` preservada.
 
+
 ## [1.4.0] - 2026-11-08 (candidato F6.11, sin publicar)
 
 - F6.11: productores realtime transaccionales para ejecuciones y trabajos de análisis IA, reutilizando Outbox existente del servicio y un Redis Stream independiente.
 - Los mensajes incluyen únicamente identificador del recurso, tipo de cambio, versión-hint y trazabilidad mínima, nunca correos, documentos, prompts, respuestas, URLs privadas ni credenciales.
 - El consumidor debe reconciliar mediante REST autorizado, especialmente al comparar eventos originados por réplicas distintas. Cuatro flags de batch OFF por defecto.
 - Componente 1.3.9 → 1.4.0; ecosistema propuesto 1.13.0. No se ha promovido develop/master ni desplegado.
+
 
 ## [1.3.9] - 2026-11-06
 
@@ -53,12 +61,14 @@
 - Pruebas de límites de octubre, retención de noviembre y cancelación de trabajos en proceso.
 - Ecosistema Dhole 1.3.12, release DH-20261106-OCTOBER-EMAIL-AI-QUEUE-014.
 
+
 ## [1.3.8] - 2026-11-06
 
 - Distingue ejecución de modelo completada con revisión posterior de un fallo real de inferencia en el estado operativo.
 - Expone DisplayStatus=CompletedWithReview en trabajos afectados, manteniendo intactos Status/ErrorCode para recuperación y auditoría.
 - Separa los contadores globales de Requiere revisión y Fallidos, con pruebas unitarias de clasificación.
 - Ecosistema Dhole 1.3.11, release DH-20261106-AI-COMPLETED-REVIEW-013.
+
 
 ## [1.3.7] - 2026-11-06
 
@@ -69,12 +79,14 @@
 - Ecosistema Dhole 1.3.10, release DH-20261106-AI-SOURCE-RECONCILE-012.
 
 
+
 ## [1.3.6] - 2026-11-06
 
 - Cierra solicitudes AI antiguas en estado Pending/RetryScheduled sin invocar Ollama ni borrar filas históricas.
 - Reconoce HTTP 410 de DataExtraction en correos anteriores al mes actual y usa el estado Cancelled en vez de Failed.
 - Evita reintentos y eventos fallidos para extracciones archivadas, conservando jobs completados.
 - Ecosistema Dhole 1.3.9, release DH-20261106-HISTORICAL-CLOSE-011.
+
 
 
 ## [1.3.5] - 2026-11-06
@@ -85,12 +97,14 @@
 - Release del ecosistema Dhole 1.3.8 DH-20261106-AI-THROUGHPUT-010.
 
 
+
 ## [1.3.4] - 2026-11-06
 
 - Mantiene Qwen 3.5 residente 15 minutos en trabajos estructurados para evitar recargas por cada correo.
 - Utiliza modo JSON ligero para Qwen 3.5 y conserva validación de contenido y extracción normalizada en Dhole.
 - Evita el coste repetido de gramáticas JSON complejas que causa timeouts y respuestas inválidas, sin eliminar control de concurrencia.
 - Ecosistema Dhole 1.3.7, release DH-20261106-AI-RELIABILITY-009.
+
 
 
 ## [1.3.3] - 2026-11-06
@@ -100,15 +114,18 @@
 - Ecosistema Dhole 1.3.4, release DH-20261106-EMAIL-QUEUE-001.
 
 
+
 ## [1.3.2] - 2026-11-05
 
 - Evita borrar ramas remotas desde el despliegue AI; las ramas de trabajo y release permanecen intactas.
 - Añade reintentos de clonación frente a errores transitorios de DNS en staging y producción.
 
+
 ## [1.3.1] - 2026-11-05
 
 - Habilita despliegue automático del servicio de IA en cada push a master; elimina el job skipped por autorización manual.
 - Conserva staging en develop y verifica versión SemVer del release.
+
 
 ## [1.3.0] - 2026-11-05
 
@@ -116,6 +133,7 @@
 - Detección de trabajos antiguos por edad y métricas de rendimiento horario.
 - Timeout acotado de Ollama y recuperación de ejecuciones huérfanas.
 - Pruebas de presupuesto y reparto de lotes.
+
 
 ## [1.2.0] - 2026-11-05
 

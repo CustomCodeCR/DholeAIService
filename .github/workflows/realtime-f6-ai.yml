@@ -1,0 +1,42 @@
+name: Realtime F6.11 AI job invalidations (isolated)
+on:
+  push:
+    branches: [feature/dhole-realtime-universal-rt-20261107-01]
+    paths:
+      - 'src/Dhole.AI.Persistence/DbContexts/ServiceDbContext.cs'
+      - 'src/Dhole.AI.Api/Program.cs'
+      - 'src/Dhole.AI.Api/Endpoints/RealtimeAccessEndpoints.cs'
+      - 'src/Dhole.AI.Persistence/Messaging/AIRealtimeInvalidation.cs'
+      - 'src/Dhole.AI.Workers/Outbox/OutboxProcessor.cs'
+      - 'tests/Dhole.AI.IntegrationTests/F6AIRealtimeContractTests.cs'
+      - 'version.json'
+      - 'Directory.Build.targets'
+      - 'CHANGELOG.md'
+      - '.github/workflows/realtime-f6-ai.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+jobs:
+  realtime-ai:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Validate component and global release versions
+        run: python3 scripts/verify_dhole_version.py
+      - name: Authenticate package feed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: dotnet nuget update source github --username github-actions --password "$GITHUB_TOKEN" --store-password-in-clear-text --configfile NuGet.Config
+      - name: Restore AI tests and API
+        run: dotnet restore tests/Dhole.AI.IntegrationTests/Dhole.AI.IntegrationTests.csproj --configfile NuGet.Config
+      - name: Build AI API and tests
+        run: dotnet build tests/Dhole.AI.IntegrationTests/Dhole.AI.IntegrationTests.csproj -c Release --no-restore
+      - name: Build AI worker and Outbox routing
+        run: dotnet build src/Dhole.AI.Workers/Dhole.AI.Workers.csproj -c Release
+      - name: Test F6.11 event security and release gate
+        run: dotnet test tests/Dhole.AI.IntegrationTests/Dhole.AI.IntegrationTests.csproj -c Release --no-build --filter FullyQualifiedName~F6AIRealtimeContractTests -- RunConfiguration.TreatNoTestsAsError=true

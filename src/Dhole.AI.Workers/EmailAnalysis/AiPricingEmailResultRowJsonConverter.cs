@@ -237,8 +237,6 @@ internal sealed partial class AiPricingEmailResultRowJsonConverter
             return directValue;
         }
 
-        // Do not try to salvage overflowing JSON numeric tokens. This fallback is
-        // intended for model strings such as "$15/cntr + $50/cntr" or "USD 65".
         if (element.ValueKind != JsonValueKind.String)
         {
             return null;

@@ -1,3 +1,8 @@
+## [1.6.0] - 2026-11-14 (API Manager discovery)
+
+- MINOR: inventario de rutas IA en runtime autenticado con scope integrations.thirdparty.manage; sin permitir ejecutar ni exponer endpoints automáticamente.
+- Global Dhole 1.56.0, mantiene API de IA y realtime.
+
 # Changelog
 
 ## [1.5.0] - 2026-11-09 (NotificationsHub universal realtime pilot; candidate)

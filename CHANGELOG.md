@@ -1,3 +1,8 @@
+## [1.6.0] - 2026-11-14 (API Manager REST inventory)
+
+- MINOR: inventario autenticado de endpoints IA; no modifica modelos, prompts ni operaciones realtime.
+- Ecosistema 1.56.0.
+
 # Changelog
 
 ## [1.3.9] - 2026-11-06

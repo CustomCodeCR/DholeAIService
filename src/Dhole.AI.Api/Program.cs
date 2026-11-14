@@ -1,3 +1,4 @@
+using Dhole.RouteDiscovery;
 using CustomCodeFramework.Api.DependencyInjection;
 using CustomCodeFramework.Api.Swagger;
 using CustomCodeFramework.Core.Abstractions;
@@ -101,6 +102,7 @@ builder.Services.AddHttpClient("overpass-kumi", client =>
 builder.Services.AddScoped<AiFileChatService>();
 
 var app = builder.Build();
+app.MapDholeRouteManifest();
 
 app.UseCustomCodeApi();
 

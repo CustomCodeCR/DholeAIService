@@ -1,3 +1,7 @@
+## [1.7.0] - 2026-11-14 (API Manager discovery)
+
+- JWT and integrations.thirdparty.manage-protected runtime route inventory for API Manager; no automatic external publication.
+
 ## [1.6.0] - 2026-11-14 (API Manager discovery)
 
 - MINOR: inventario de rutas IA en runtime autenticado con scope integrations.thirdparty.manage; sin permitir ejecutar ni exponer endpoints automáticamente.

@@ -1,3 +1,10 @@
+## [1.7.0] - 2026-11-15 (CPU document evidence candidate)
+
+- MINOR: clasificador conservador de BL/HBL/MBL, AWB, carta porte, factura, packing list y manifiestos para limitar a una sola revisión breve su paso por el flujo de tarifarios cuando no contienen ofertas de tarifas.
+- Evita interpretar valores declarados, importes comerciales y términos freight prepaid/collect como costos de cotizaciones; conserva el mismo modelo Qwen/Ollama y la extracción de correos vigente.
+- Reduce slots AI simultáneos por defecto a 2 y presupuesto por ciclo a 16 para no saturar servidores sin GPU; mantiene la cola y la idempotencia existentes.
+- Candidato global Dhole 1.57.0 (DH-20261115-CPU-DOC-EVIDENCE-144); pendiente de CI, staging y actualización coordinada del manifiesto.
+
 ## [1.6.0] - 2026-11-14 (API Manager discovery)
 
 - MINOR: inventario de rutas IA en runtime autenticado con scope integrations.thirdparty.manage; sin permitir ejecutar ni exponer endpoints automáticamente.

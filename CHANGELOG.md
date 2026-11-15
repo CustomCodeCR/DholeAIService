@@ -1,3 +1,8 @@
+## [1.8.0] - 2026-11-15 (Centro de colas operacional)
+
+- MINOR: Añade endpoint de búsqueda y paginación completa para trabajos IA (incluidos completados), correlación, intentos, errores, lease y fechas; conserva acciones existentes de reintentar/retirar y el modelo Ollama actual.
+- Dhole global 1.60.0, release DH-20261115-QUEUE-CONTROL-145. Staging y CI requeridos; sin autorización nueva de producción.
+
 ## [1.7.0] - 2026-11-15 (CPU document evidence candidate)
 
 - MINOR: clasificador conservador de BL/HBL/MBL, AWB, carta porte, factura, packing list y manifiestos para limitar a una sola revisión breve su paso por el flujo de tarifarios cuando no contienen ofertas de tarifas.

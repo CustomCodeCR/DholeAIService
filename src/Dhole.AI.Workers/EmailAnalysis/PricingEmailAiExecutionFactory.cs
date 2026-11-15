@@ -118,7 +118,20 @@ internal static class PricingEmailAiExecutionFactory
         var stages = new List<StageDefinition>();
         var hasPreviousRows = payload.PreviousRows.Count > 0;
 
-        if (imageBytes is { Length: > 0 })
+        if (NonPricingDocumentGuard.IsDocumentWithoutTariff(
+            payload.SourceName, focusedSourceContent))
+        {
+            // A standalone invoice, manifest or transport document is not a
+            // rate sheet. One short evidence-check stage is enough; never
+            // invent quotation prices from declared invoice/customs values.
+            stages.Add(new StageDefinition(
+                "non-pricing-document-check",
+                LimitPreservingEdges(focusedSourceContent, 2500),
+                IncludePreviousExtraction: false,
+                IncludeImage: false
+            ));
+        }
+        else if (imageBytes is { Length: > 0 })
         {
             stages.Add(new StageDefinition(
                 "image-or-repair",
@@ -261,6 +274,8 @@ internal static class PricingEmailAiExecutionFactory
                 rules = new[]
                 {
                     "Devuelve únicamente un objeto JSON con success, confidence, rows y warnings. Cada fila utiliza las claves de outputContract.rowKeys; omite propiedades sin evidencia, nunca inventes valores ni filas.",
+                    "Un BL/HBL/MBL, AWB, carta de porte, manifiesto, packing list o factura comercial no es por sí solo un tarifario. Si no existe una oferta explícita de tarifa, devuelve success=false, rows=[] y una advertencia; NUNCA conviertas valores declarados, montos de factura, peso o freight prepaid/collect en costos de cotización.",
+                    "La fuente original manda: marca incertidumbre, nunca inventes importes ni rutas. OCR y Markdown son evidencia a verificar, no una autorización para completar cifras ausentes.",
                     "Procesa también tarifas LCL, aéreas y terrestres. Conserva la unidad publicada (W/M, CBM, KG/VOL, tonelada, kg, mínimo) en remarks; no conviertas tarifas unitarias en totales por contenedor ni uses el mínimo como tarifa unitaria.",
                     "Si la fuente dice AEREO/AÉREO/AIR, KG/VOL, AIRLINE/AEROLÍNEA o publica una matriz aérea con Mínimo y breakpoints de peso (+100 y otros como +300, +500 o +1000), usa containerType=AIR. La palabra Consolidado/B2B en ese contexto sigue siendo servicio aéreo: no lo clasifiques como LCL marítimo ni FCL.",
                     "En tarifas aéreas, pol y poe son aeropuertos. Prefiere códigos IATA explícitos. Para tarifarios PIER 17 de Miami a Costa Rica usa MIA como pol y SJO como poe cuando esa ruta queda respaldada por subject/emailContext/adjunto; para España/Madrid usa MAD -> SJO.",

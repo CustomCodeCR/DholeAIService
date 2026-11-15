@@ -16,8 +16,31 @@ env:
   DHOLE_NETWORK: dhole
   COMPOSE_PROJECT: dhole
 jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      deploy: ${{ steps.revision.outputs.deploy }}
+    steps:
+      - name: Avoid deploying an obsolete master revision
+        id: revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${GITHUB_REF_NAME}" --jq '.object.sha')"
+          if [ "${GITHUB_SHA}" = "$current" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping superseded release ${GITHUB_SHA}; latest commit is $current"
+          fi
   deploy:
+    needs: freshness
+    if: needs.freshness.outputs.deploy == 'true'
     runs-on: [self-hosted, linux, x64, dhole]
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Load Dhole deployment infrastructure
@@ -48,8 +71,8 @@ jobs:
         run: |
           set -euo pipefail
           SHA_TAG="${GITHUB_SHA::12}"
-          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.AI.Api/Dockerfile -t dhole/ai-api:latest -t "dhole/ai-api:$SHA_TAG" .
-          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.AI.Workers/Dockerfile -t dhole/ai-workers:latest -t "dhole/ai-workers:$SHA_TAG" .
+          docker build --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.AI.Api/Dockerfile -t dhole/ai-api:latest -t "dhole/ai-api:$SHA_TAG" .
+          docker build --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.AI.Workers/Dockerfile -t dhole/ai-workers:latest -t "dhole/ai-workers:$SHA_TAG" .
       - name: Deploy AI
         run: |
           set -euo pipefail

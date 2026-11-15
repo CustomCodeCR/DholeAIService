@@ -1,3 +1,8 @@
+## [1.8.1] - 2026-11-15 (Optimización de despliegue y protección de releases)
+
+- PATCH DH-20261115-DEPLOY-FASTPATH-146: separa las pruebas del PR del despliegue a producción, omite revisiones master obsoletas antes de ocupar el runner self-hosted y conserva las validaciones de versión y de regresión en CI.
+- Reutiliza las capas Docker locales sin forzar la consulta de la imagen base en cada build; límite de ejecución de despliegue y diagnóstico preservado. Ecosistema 1.60.1.
+
 ## [1.8.0] - 2026-11-15 (Centro de colas operacional)
 
 - MINOR: Añade endpoint de búsqueda y paginación completa para trabajos IA (incluidos completados), correlación, intentos, errores, lease y fechas; conserva acciones existentes de reintentar/retirar y el modelo Ollama actual.

@@ -140,6 +140,7 @@ app.MapAiProfileEndpoints();
 app.MapAiPromptTemplateEndpoints();
 app.MapAiExecutionEndpoints();
 app.MapAiOperationsEndpoints();
+app.MapAiQueueBrowserEndpoints();
 app.MapAiFileExecutionEndpoints();
 app.MapAiLogisticsV2Endpoints();
 app.MapAiLogisticsNewsEndpoints();

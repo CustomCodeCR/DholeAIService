@@ -1,3 +1,7 @@
+## [1.9.0] - 2026-11-16 (Inventario HTTP protegido en producción)
+
+- MINOR DH-20261116-API-ROUTES-DEFAULTS-165: expone rutas runtime para el API Manager bajo JWT y scope integrations.thirdparty.manage, sin alterar contratos REST ni seguridad.
+
 ## [1.8.1] - 2026-11-15 (Optimización de despliegue y protección de releases)
 
 - PATCH DH-20261115-DEPLOY-FASTPATH-146: separa las pruebas del PR del despliegue a producción, omite revisiones master obsoletas antes de ocupar el runner self-hosted y conserva las validaciones de versión y de regresión en CI.
